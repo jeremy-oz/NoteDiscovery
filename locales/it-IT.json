@@ -72,6 +72,25 @@
     "settings_title": "IMPOSTAZIONI",
     "filtered_notes": "Note Filtrate"
   },
+  "recent": {
+    "title": "Modificati di recente",
+    "short": "Recenti",
+    "refresh": "Aggiorna",
+    "filter_placeholder": "Filtra per nome o cartella…",
+    "type_all": "Tutti",
+    "type_notes": "Note",
+    "type_drawings": "Disegni",
+    "type_other": "Altro",
+    "today": "Oggi",
+    "yesterday": "Ieri",
+    "this_week": "Questa settimana",
+    "this_month": "Questo mese",
+    "older": "Meno recenti",
+    "root": "Radice",
+    "show_more": "Mostra altri {{count}}",
+    "no_match": "Nessun file corrispondente",
+    "empty": "Ancora nessun file"
+  },
   "editor": {
     "placeholder": "Inizia a scrivere in markdown...",
     "drop_hint": "💡 Rilascia qui per inserire alla posizione del cursore...",

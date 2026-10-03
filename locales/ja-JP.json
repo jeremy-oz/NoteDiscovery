@@ -72,6 +72,25 @@
     "settings_title": "設定",
     "filtered_notes": "フィルター済みノート"
   },
+  "recent": {
+    "title": "最近更新",
+    "short": "最近",
+    "refresh": "更新",
+    "filter_placeholder": "名前またはフォルダで絞り込み…",
+    "type_all": "すべて",
+    "type_notes": "ノート",
+    "type_drawings": "図",
+    "type_other": "その他",
+    "today": "今日",
+    "yesterday": "昨日",
+    "this_week": "今週",
+    "this_month": "今月",
+    "older": "それ以前",
+    "root": "ルート",
+    "show_more": "さらに {{count}} 件表示",
+    "no_match": "一致するファイルはありません",
+    "empty": "まだファイルがありません"
+  },
   "editor": {
     "placeholder": "マークダウンで書き始める...",
     "drop_hint": "💡 ここにドロップしてカーソル位置に挿入...",

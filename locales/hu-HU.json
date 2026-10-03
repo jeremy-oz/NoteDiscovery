@@ -72,6 +72,25 @@
     "settings_title": "BEÁLLÍTÁSOK",
     "filtered_notes": "Szűrt jegyzetek"
   },
+  "recent": {
+    "title": "Nemrég módosítva",
+    "short": "Legutóbbi",
+    "refresh": "Frissítés",
+    "filter_placeholder": "Szűrés név vagy mappa szerint…",
+    "type_all": "Mind",
+    "type_notes": "Jegyzetek",
+    "type_drawings": "Rajzok",
+    "type_other": "Egyéb",
+    "today": "Ma",
+    "yesterday": "Tegnap",
+    "this_week": "Ezen a héten",
+    "this_month": "Ebben a hónapban",
+    "older": "Régebbi",
+    "root": "Gyökér",
+    "show_more": "További {{count}} megjelenítése",
+    "no_match": "Nincs egyező fájl",
+    "empty": "Még nincsenek fájlok"
+  },
   "editor": {
     "placeholder": "Kezdj el írni markdown-ban...",
     "drop_hint": "💡 Beszúrás ide...",

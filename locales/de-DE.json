@@ -72,6 +72,25 @@
     "settings_title": "EINSTELLUNGEN",
     "filtered_notes": "Gefilterte Notizen"
   },
+  "recent": {
+    "title": "Zuletzt geändert",
+    "short": "Neueste",
+    "refresh": "Aktualisieren",
+    "filter_placeholder": "Nach Name oder Ordner filtern…",
+    "type_all": "Alle",
+    "type_notes": "Notizen",
+    "type_drawings": "Zeichnungen",
+    "type_other": "Andere",
+    "today": "Heute",
+    "yesterday": "Gestern",
+    "this_week": "Diese Woche",
+    "this_month": "Diesen Monat",
+    "older": "Älter",
+    "root": "Stammordner",
+    "show_more": "{{count}} weitere anzeigen",
+    "no_match": "Keine passenden Dateien",
+    "empty": "Noch keine Dateien"
+  },
   "editor": {
     "placeholder": "Schreibe in Markdown...",
     "drop_hint": "💡 Hier ablegen, um an Cursorposition einzufügen...",

@@ -72,6 +72,25 @@
     "settings_title": "NASTAVITVE",
     "filtered_notes": "Filtrirani zapiski"
   },
+  "recent": {
+    "title": "Nedavno spremenjeno",
+    "short": "Nedavno",
+    "refresh": "Osveži",
+    "filter_placeholder": "Filtriraj po imenu ali mapi…",
+    "type_all": "Vse",
+    "type_notes": "Zapiski",
+    "type_drawings": "Risbe",
+    "type_other": "Drugo",
+    "today": "Danes",
+    "yesterday": "Včeraj",
+    "this_week": "Ta teden",
+    "this_month": "Ta mesec",
+    "older": "Starejše",
+    "root": "Koren",
+    "show_more": "Prikaži še {{count}}",
+    "no_match": "Ni ujemajočih datotek",
+    "empty": "Še ni datotek"
+  },
   "editor": {
     "placeholder": "Začnite pisati v markdownu...",
     "drop_hint": "💡 Spustite tukaj za vstavljanje na mesto kazalca...",

@@ -72,6 +72,25 @@
     "settings_title": "PARAMÈTRES",
     "filtered_notes": "Notes Filtrées"
   },
+  "recent": {
+    "title": "Modifiés récemment",
+    "short": "Récents",
+    "refresh": "Actualiser",
+    "filter_placeholder": "Filtrer par nom ou dossier…",
+    "type_all": "Tous",
+    "type_notes": "Notes",
+    "type_drawings": "Dessins",
+    "type_other": "Autres",
+    "today": "Aujourd'hui",
+    "yesterday": "Hier",
+    "this_week": "Cette semaine",
+    "this_month": "Ce mois-ci",
+    "older": "Plus ancien",
+    "root": "Racine",
+    "show_more": "Afficher {{count}} de plus",
+    "no_match": "Aucun fichier ne correspond",
+    "empty": "Aucun fichier pour l'instant"
+  },
   "editor": {
     "placeholder": "Commencez à écrire en markdown...",
     "drop_hint": "💡 Déposez ici pour insérer à la position du curseur...",

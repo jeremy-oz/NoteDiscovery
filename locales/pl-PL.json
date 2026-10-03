@@ -71,6 +71,25 @@
     "settings_title": "USTAWIENIA",
     "filtered_notes": "Filtrowane notatki"
   },
+  "recent": {
+    "title": "Ostatnio zmienione",
+    "short": "Ostatnie",
+    "refresh": "Odśwież",
+    "filter_placeholder": "Filtruj po nazwie lub folderze…",
+    "type_all": "Wszystkie",
+    "type_notes": "Notatki",
+    "type_drawings": "Rysunki",
+    "type_other": "Inne",
+    "today": "Dzisiaj",
+    "yesterday": "Wczoraj",
+    "this_week": "W tym tygodniu",
+    "this_month": "W tym miesiącu",
+    "older": "Starsze",
+    "root": "Katalog główny",
+    "show_more": "Pokaż {{count}} więcej",
+    "no_match": "Brak pasujących plików",
+    "empty": "Brak plików"
+  },
   "editor": {
     "placeholder": "Zacznij pisać w Markdownie...",
     "drop_hint": "💡 Upuść tutaj, aby wstawić w miejscu kursora...",

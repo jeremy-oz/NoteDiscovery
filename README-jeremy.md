@@ -12,6 +12,15 @@ for how it works.
 
 Smaller fork changes to upstream behaviour:
 
+- **A "Recently updated" panel** (clock icon in the icon rail, and a "Recent" tab
+  in the mobile bottom bar). Every file in the vault, newest first, no folders,
+  grouped Today / Yesterday / This week / This month / Older. The filter matches
+  every typed word against the name and folder path, in any order and ignoring
+  accents ("week 3 maths"); chips narrow it to notes, drawings or other files, and
+  Enter opens the top match. It re-reads the vault when opened, when the tab
+  regains focus (at most every 10 s) and from its refresh button, so edits made in
+  Obsidian show up without a page reload. Logic is the `recent*` methods in
+  `app.js`; strings are the `recent` section of every `locales/*.json`.
 - **The homepage defaults to the list view** (upstream defaults to cards). A
   viewer who picks cards keeps it; the choice is per browser (`homepageView` in
   localStorage). Two lines in `app.js`: the `LOCAL_SETTINGS` default and the
@@ -117,7 +126,8 @@ The feature is deliberately structured to keep this cheap:
   paths auto-merge instead of conflicting.
 
 Expect conflicts only around `closeMediaViewer()` / `viewMedia()` in `app.js`, the
-script tags in `index.html`, the `homepageView` default lines, and the end of
+script tags in `index.html`, the icon rail / mobile bottom bar in `index.html`
+(the Recent button sits between Files and Search), the `homepageView` default lines, and the end of
 `.gitignore` (both sides append there — keep both). Both are mechanical: keep upstream's version and
 re-add the `ExcalidrawEditor.teardown()` call / the `excalidraw-editor.js` tag.
 
