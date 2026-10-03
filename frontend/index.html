@@ -1077,6 +1077,19 @@
                         </svg>
                     </button>
                 
+                <!-- Recent (fork): every file, newest first -->
+                <button
+                    class="icon-rail-btn"
+                    :class="{'active': activePanel === 'recent'}"
+                    @click="openSidebarPanel('recent')"
+                    :title="t('recent.title')"
+                    :aria-label="t('recent.title')"
+                >
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                    </svg>
+                </button>
+
                 <!-- Search -->
                         <button
                     class="icon-rail-btn relative" 
@@ -1435,6 +1448,115 @@
                     </div>
                 </div>
                 <!-- END FILES PANEL -->
+
+                <!-- ==================== RECENT PANEL (fork) ==================== -->
+                <div x-show="activePanel === 'recent'" x-transition:enter="transition ease-out duration-150" x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100" class="flex flex-col h-full">
+                    <div class="flex-shrink-0 px-3 py-2 border-b flex items-center justify-between" style="border-color: var(--border-primary);">
+                        <span class="text-xs font-semibold uppercase tracking-wide" style="color: var(--text-tertiary);" x-text="t('recent.title')"></span>
+                        <div class="flex items-center gap-1">
+                            <span class="text-xs px-1.5 py-0.5 rounded" style="background-color: var(--bg-tertiary); color: var(--text-tertiary);" x-text="recentFiles().length"></span>
+                            <button
+                                @click="refreshRecent({ force: true })"
+                                class="p-1 rounded hover-accent"
+                                style="color: var(--text-tertiary);"
+                                :title="t('recent.refresh')"
+                                :aria-label="t('recent.refresh')"
+                            >
+                                <svg class="w-3.5 h-3.5" :class="notesLoading ? 'animate-spin' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Filter: words match the name or folder path, in any order -->
+                    <div class="flex-shrink-0 px-2 py-2 border-b space-y-1.5" style="border-color: var(--border-primary);">
+                        <div class="relative">
+                            <input
+                                type="text"
+                                x-model="recentQuery"
+                                @input="recentLimit = 100"
+                                @keydown.enter.prevent="openFirstRecent()"
+                                @keydown.escape="recentQuery = ''"
+                                :placeholder="t('recent.filter_placeholder')"
+                                class="w-full px-2 py-1.5 pl-7 pr-7 text-xs rounded focus:outline-none focus:ring-1"
+                                style="background-color: var(--bg-primary); color: var(--text-primary); border: 1px solid var(--border-primary);"
+                            >
+                            <svg class="absolute left-2 top-2 w-3.5 h-3.5" style="color: var(--text-tertiary);" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"></path>
+                            </svg>
+                            <button
+                                x-show="recentQuery.length > 0"
+                                @click="recentQuery = ''"
+                                class="absolute right-1.5 top-1.5 w-4 h-4 flex items-center justify-center rounded-full hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+                                style="color: var(--text-tertiary);"
+                                :title="t('sidebar.clear_search')"
+                            >
+                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                            </button>
+                        </div>
+                        <div class="flex gap-1">
+                            <template x-for="kind in ['all', 'notes', 'drawings', 'other']" :key="kind">
+                                <button
+                                    @click="recentType = kind; recentLimit = 100"
+                                    class="flex-1 px-1.5 py-0.5 text-xs rounded transition-colors"
+                                    :style="recentType === kind ? 'background-color: var(--accent-primary); color: white;' : 'background-color: var(--bg-tertiary); color: var(--text-secondary);'"
+                                    :aria-pressed="recentType === kind"
+                                    x-text="t('recent.type_' + kind)"
+                                ></button>
+                            </template>
+                        </div>
+                    </div>
+
+                    <div class="flex-1 overflow-y-auto custom-scrollbar">
+                        <div class="px-2 pb-2">
+                            <template x-for="row in recentRows()" :key="row.note.path">
+                                <div>
+                                    <div
+                                        x-show="row.header"
+                                        class="text-[10px] font-semibold uppercase tracking-wide px-2 pt-3 pb-1"
+                                        style="color: var(--text-tertiary);"
+                                        x-text="row.header"
+                                    ></div>
+                                    <div
+                                        @click="openItem(row.note.path, row.note.type)"
+                                        class="hover-accent px-2 py-1.5 text-sm cursor-pointer rounded flex items-start gap-2"
+                                        :style="(currentNote === row.note.path || currentMedia === row.note.path) ? 'background-color: var(--accent-light); color: var(--accent-primary);' : 'color: var(--text-primary);'"
+                                        :title="row.note.path + ' — ' + new Date(row.note.modified).toLocaleString(currentLocale)"
+                                    >
+                                        <span class="w-4 flex-shrink-0 mt-0.5 text-center text-xs" aria-hidden="true">
+                                            <svg x-show="row.note.type === 'note'" class="w-4 h-4" style="color: var(--text-tertiary);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                                            </svg>
+                                            <span x-show="row.note.type !== 'note'" x-text="getMediaIcon(row.note.type)"></span>
+                                        </span>
+                                        <div class="min-w-0 flex-1">
+                                            <div class="flex items-baseline gap-2">
+                                                <span class="font-medium truncate flex-1 min-w-0" x-text="row.note.name"></span>
+                                                <span class="text-[11px] flex-shrink-0" style="color: var(--text-tertiary);" x-text="recentWhen(row.note.modified)"></span>
+                                            </div>
+                                            <div class="text-xs truncate" style="color: var(--text-tertiary);" x-text="row.note.folder || t('recent.root')"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </template>
+                            <button
+                                x-show="recentFiles().length > recentLimit"
+                                @click="recentLimit += 100"
+                                class="w-full mt-2 px-2 py-1.5 text-xs rounded hover-accent"
+                                style="color: var(--accent-primary);"
+                                x-text="t('recent.show_more', { count: recentFiles().length - recentLimit })"
+                            ></button>
+                            <div x-show="recentFiles().length === 0" class="text-center py-6 px-3">
+                                <svg class="w-12 h-12 mx-auto mb-3 opacity-40" style="color: var(--text-tertiary);" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                </svg>
+                                <p class="text-sm" style="color: var(--text-tertiary);" x-text="recentQuery ? t('recent.no_match') : t('recent.empty')"></p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <!-- END RECENT PANEL -->
                 
                 <!-- ==================== SEARCH PANEL ==================== -->
                 <div x-show="activePanel === 'search'" x-transition:enter="transition ease-out duration-150" x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100" class="flex flex-col h-full">
@@ -3807,6 +3929,17 @@
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path>
             </svg>
             <span x-text="t('sidebar.files')"></span>
+        </button>
+        <button
+            class="mobile-bottom-tab"
+            :class="{'active': activePanel === 'recent' && mobileSidebarOpen}"
+            @click="activePanel = 'recent'; mobileSidebarOpen = true; refreshRecent();"
+            :aria-label="t('recent.title')"
+        >
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+            </svg>
+            <span x-text="t('recent.short')"></span>
         </button>
         <button 
             class="mobile-bottom-tab relative"

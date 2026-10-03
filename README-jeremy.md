@@ -10,6 +10,22 @@ An **Excalidraw editor** for `*.excalidraw` vector scenes, alongside upstream's
 raster drawing editor. See [documentation/EXCALIDRAW.md](documentation/EXCALIDRAW.md)
 for how it works.
 
+Smaller fork changes to upstream behaviour:
+
+- **A "Recently updated" panel** (clock icon in the icon rail, and a "Recent" tab
+  in the mobile bottom bar). Every file in the vault, newest first, no folders,
+  grouped Today / Yesterday / This week / This month / Older. The filter matches
+  every typed word against the name and folder path, in any order and ignoring
+  accents ("week 3 maths"); chips narrow it to notes, drawings or other files, and
+  Enter opens the top match. It re-reads the vault when opened, when the tab
+  regains focus (at most every 10 s) and from its refresh button, so edits made in
+  Obsidian show up without a page reload. Logic is the `recent*` methods in
+  `app.js`; strings are the `recent` section of every `locales/*.json`.
+- **The homepage defaults to the list view** (upstream defaults to cards). A
+  viewer who picks cards keeps it; the choice is per browser (`homepageView` in
+  localStorage). Two lines in `app.js`: the `LOCAL_SETTINGS` default and the
+  initial `homepageView` value.
+
 | | |
 |---|---|
 | Branch | `feature/excalidraw-editor` |
@@ -95,10 +111,37 @@ Xiaolai is 12 MB, against ~480 KB for every other Excalidraw font combined, so
 - **React loaded from a CDN.** Replaced by the vendored bundle; the `importmap` in
   `index.html` is gone, since React is compiled in.
 
+- **Opening a scene from another address rewrote it.** `serializeAsJSON` stamps
+  `"source"` with `location.origin`, so a scene saved at `localhost:8000` and
+  opened at a LAN hostname (or another port) differed from the file on its first
+  `onChange` and was written back, on every open from that address. Vaults
+  reached from more than one address churned indefinitely. `serializeMounted()`
+  now keeps the `source` the scene was loaded with; new scenes keep the address
+  they were created on.
+
+## Versioning — bump on every fork change
+
+`VERSION` carries a fork suffix: `<upstream version>+jc.<n>`, e.g. `0.31.7+jc.1`
+(same style as the kanban-tui fork). **Bump `n` in every commit that changes
+anything under `frontend/`**, and reset it to `+jc.1` when merging a new upstream
+release (take upstream's number, add the suffix).
+
+Why: the version is the browser cache key. Script URLs are `app.js?v=<version>`
+and the service worker serves `/static/` cache-first under a cache named after the
+version. Ship new frontend code under an unchanged version and every browser that
+already has the app keeps running the old `app.js` against the new `index.html`
+(which is not cached) — new buttons appear but do nothing, until a hard reload.
+
+`+jc.n` is a valid PEP 440 local version, so `pyproject.toml` (which reads
+`VERSION`) accepts it; after changing it, `uv sync --reinstall-package
+notediscovery` refreshes the installed metadata. `release.ps1` is upstream's and
+expects plain `X.Y.Z` — don't use it on this fork.
+
 ## Keeping up with upstream
 
 ```bash
 git fetch upstream && git merge upstream/main
+# VERSION will conflict on every upstream release: take theirs, append +jc.1
 ```
 
 The feature is deliberately structured to keep this cheap:
@@ -109,10 +152,12 @@ The feature is deliberately structured to keep this cheap:
 - `closeMediaViewer()` mirrors upstream's method, so the four navigation teardown
   paths auto-merge instead of conflicting.
 
-Expect conflicts only around `closeMediaViewer()` / `viewMedia()` in `app.js` and
-the script tags in `index.html`. Both are mechanical: keep upstream's version and
+Expect conflicts only around `closeMediaViewer()` / `viewMedia()` in `app.js`, the
+script tags in `index.html`, the icon rail / mobile bottom bar in `index.html`
+(the Recent button sits between Files and Search), the `homepageView` default lines, and the end of
+`.gitignore` (both sides append there — keep both). Both are mechanical: keep upstream's version and
 re-add the `ExcalidrawEditor.teardown()` call / the `excalidraw-editor.js` tag.
 
-Last merged: **upstream v0.31.5** (2026-09-05, one keep-both conflict in `.gitignore`).
+Last merged: **upstream v0.31.7** (3 Oct 2026; mrchenoz main also carries the 2026-09-05 theme-sync + editor guard).
 
 After each merge: rebuild the bundle, start `run.py` against a scratch `NOTES_DIR`, and check `POST /api/upload-media` (new scene), `GET`/`PUT /api/media/<scene>` and that `/vendor/excalidraw/excalidraw.js` is served.

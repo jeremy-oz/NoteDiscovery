@@ -72,6 +72,25 @@
     "settings_title": "SETTINGS",
     "filtered_notes": "Filtered Notes"
   },
+  "recent": {
+    "title": "Recently updated",
+    "short": "Recent",
+    "refresh": "Refresh",
+    "filter_placeholder": "Filter by name or folder…",
+    "type_all": "All",
+    "type_notes": "Notes",
+    "type_drawings": "Drawings",
+    "type_other": "Other",
+    "today": "Today",
+    "yesterday": "Yesterday",
+    "this_week": "This week",
+    "this_month": "This month",
+    "older": "Older",
+    "root": "Root",
+    "show_more": "Show {{count}} more",
+    "no_match": "No files match",
+    "empty": "No files yet"
+  },
   "editor": {
     "placeholder": "Start writing in markdown...",
     "drop_hint": "💡 Drop here to insert at cursor position...",

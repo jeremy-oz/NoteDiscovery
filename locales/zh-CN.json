@@ -72,6 +72,25 @@
     "settings_title": "设置",
     "filtered_notes": "筛选的笔记"
   },
+  "recent": {
+    "title": "最近更新",
+    "short": "最近",
+    "refresh": "刷新",
+    "filter_placeholder": "按名称或文件夹筛选…",
+    "type_all": "全部",
+    "type_notes": "笔记",
+    "type_drawings": "绘图",
+    "type_other": "其他",
+    "today": "今天",
+    "yesterday": "昨天",
+    "this_week": "本周",
+    "this_month": "本月",
+    "older": "更早",
+    "root": "根目录",
+    "show_more": "再显示 {{count}} 个",
+    "no_match": "没有匹配的文件",
+    "empty": "还没有文件"
+  },
   "editor": {
     "placeholder": "开始用 Markdown 写作...",
     "drop_hint": "💡 拖放到此处以插入到光标位置...",

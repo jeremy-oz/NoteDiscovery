@@ -72,6 +72,25 @@
     "settings_title": "НАСТРОЙКИ",
     "filtered_notes": "Отфильтрованные заметки"
   },
+  "recent": {
+    "title": "Недавно изменённые",
+    "short": "Недавние",
+    "refresh": "Обновить",
+    "filter_placeholder": "Фильтр по имени или папке…",
+    "type_all": "Все",
+    "type_notes": "Заметки",
+    "type_drawings": "Рисунки",
+    "type_other": "Другое",
+    "today": "Сегодня",
+    "yesterday": "Вчера",
+    "this_week": "На этой неделе",
+    "this_month": "В этом месяце",
+    "older": "Ранее",
+    "root": "Корень",
+    "show_more": "Показать ещё {{count}}",
+    "no_match": "Нет подходящих файлов",
+    "empty": "Файлов пока нет"
+  },
   "editor": {
     "placeholder": "Начните писать в markdown...",
     "drop_hint": "💡 Отпустите здесь для вставки в позицию курсора...",

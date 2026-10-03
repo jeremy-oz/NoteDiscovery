@@ -44,6 +44,7 @@
         saveInFlight: false,
         saveQueued: false,
         lastSavedJSON: null,
+        source: null,       // the loaded scene's "source" field, kept on save
     };
 
     /** Route through app.js's ErrorHandler when present, else fall back to the console. */
@@ -97,12 +98,21 @@
     /** Serialize the mounted scene, or null when there is nothing to serialize. */
     function serializeMounted() {
         if (!EXCAL.api || !EXCAL.lib || !EXCAL.mountedFor) return null;
-        return EXCAL.lib.serializeAsJSON(
+        const json = EXCAL.lib.serializeAsJSON(
             EXCAL.api.getSceneElements(),
             EXCAL.api.getAppState(),
             EXCAL.api.getFiles(),
             'local'
         );
+        // serializeAsJSON stamps "source" with location.origin, so opening a scene
+        // from another address (localhost vs a LAN hostname, another port) would
+        // differ from the file and rewrite it on every open. Keep the loaded
+        // value; re-stringify the same way serializeAsJSON does (2-space indent).
+        if (!EXCAL.source) return json;
+        const data = JSON.parse(json);
+        if (data.source === EXCAL.source) return json;
+        data.source = EXCAL.source;
+        return JSON.stringify(data, null, 2);
     }
 
     /** Debounced autosave; same delay source as note/drawing autosave. */
@@ -182,6 +192,7 @@
         EXCAL.app = null;
         EXCAL.props = null;
         EXCAL.lastSavedJSON = null;
+        EXCAL.source = null;
         EXCAL.saveQueued = false;
         if (root) {
             try { root.unmount(); } catch (_) { /* ignore */ }
@@ -250,6 +261,7 @@
         // is byte-identical to the string compared in save(); a scene that is not
         // yet canonical costs exactly one normalising write and then settles.
         EXCAL.lastSavedJSON = onDiskJSON;
+        EXCAL.source = (scene && typeof scene.source === 'string') ? scene.source : null;
         // Kept on EXCAL so setTheme() can re-render the same element with one prop
         // changed; React reconciles in place, so the scene and its history survive.
         EXCAL.props = {

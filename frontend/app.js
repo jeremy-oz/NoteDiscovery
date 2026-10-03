@@ -77,7 +77,7 @@ const LOCAL_SETTINGS = {
     // String settings with validation
     viewMode: { key: 'viewMode', type: 'string', default: 'split', valid: ['edit', 'split', 'preview'] },
     // Homepage layout. Cards stay the default so existing vaults look unchanged.
-    homepageView: { key: 'homepageView', type: 'string', default: 'cards', valid: ['cards', 'list'] },
+    homepageView: { key: 'homepageView', type: 'string', default: 'list', valid: ['cards', 'list'] },
     // JSON settings
     favorites: { key: 'noteFavorites', type: 'json', default: [] },
 };
@@ -382,7 +382,13 @@ function noteApp() {
         sortMode: localStorage.getItem('sortMode') || 'a-z',
 
         // Icon rail / panel state
-        activePanel: 'files', // 'files', 'search', 'tags', 'outline', 'backlinks', 'shared', 'settings'
+        activePanel: 'files', // 'files', 'recent', 'search', 'tags', 'outline', 'backlinks', 'shared', 'settings'
+        // Recent panel (fork): every file in the vault, newest first, no folders
+        recentQuery: '',
+        recentType: 'all', // 'all' | 'notes' | 'drawings' | 'other'
+        recentLimit: 100,
+        _recentCache: { notes: null, query: null, type: null, result: [] },
+        _recentLastRefresh: 0,
         
         // Folder state
         folderTree: [],
@@ -519,7 +525,8 @@ function noteApp() {
         // Homepage constants
         HOMEPAGE_MAX_NOTES: 50,
         // Read before init() so the first paint matches the saved layout.
-        homepageView: localStorage.getItem('homepageView') === 'list' ? 'list' : 'cards',
+        // Fork: list is the default; cards only when a viewer has chosen it.
+        homepageView: localStorage.getItem('homepageView') === 'cards' ? 'cards' : 'list',
         // Name filter for the current homepage folder. Separate from searchQuery,
         // which is the sidebar's full-text search.
         homepageNameQuery: '',
@@ -785,6 +792,11 @@ function noteApp() {
                 document.title = this.appName;
             }
             
+            // Recent panel (fork): pick up edits made elsewhere when the tab comes back
+            window.addEventListener('focus', () => {
+                if (this.activePanel === 'recent') this.refreshRecent();
+            });
+
             // Listen for browser back/forward navigation
             window.addEventListener('popstate', (e) => {
                 if (e.state && e.state.notePath) {
@@ -1238,6 +1250,7 @@ function noteApp() {
             if (isDesktop && this.sidebarPanelCollapsed) {
                 this.toggleSidebarPanel();
             }
+            if (panelName === 'recent') this.refreshRecent();
         },
 
         // Handle Tab key in editor (inserts tab if setting enabled; Shift+Tab outdents matching lines)
@@ -8290,6 +8303,94 @@ function noteApp() {
         },
 
         /** Display rows for Shared notes panel: name + folder line (search-style) */
+        // ---- Recent panel (fork) ----
+        // Files edited outside NoteDiscovery (Obsidian, sync) only reach this.notes on a
+        // reload, so re-sync quietly when the panel is opened or the tab regains focus.
+        // Throttled: loadNotes() rescans the vault.
+        refreshRecent({ force = false } = {}) {
+            const now = Date.now();
+            if (!force && now - this._recentLastRefresh < 10000) return;
+            this._recentLastRefresh = now;
+            this.loadNotes({ silent: true });
+        },
+
+        _recentKind(type) {
+            if (type === 'note') return 'notes';
+            if (type === 'excalidraw' || type === 'drawing') return 'drawings';
+            return 'other';
+        },
+
+        // Lower-case and strip accents, so "resume" finds "Résumé"
+        _recentFold(text) {
+            return (text || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+        },
+
+        // All files, newest first, filtered by type and by every word of the query.
+        // Each word must appear in the name or the folder path, in any order, so
+        // "week 3 maths" finds "Teaching/Maths/Week 3 plan".
+        recentFiles() {
+            const c = this._recentCache;
+            if (c.notes === this.notes && c.query === this.recentQuery && c.type === this.recentType) {
+                return c.result;
+            }
+            const words = this._recentFold(this.recentQuery).split(/\s+/).filter(Boolean);
+            const result = (this.notes || [])
+                .filter(n => this.recentType === 'all' || this._recentKind(n.type) === this.recentType)
+                .filter(n => {
+                    if (!words.length) return true;
+                    const hay = this._recentFold(n.path);
+                    return words.every(w => hay.includes(w));
+                })
+                .sort((a, b) => (b.modified || '').localeCompare(a.modified || ''));
+            this._recentCache = { notes: this.notes, query: this.recentQuery, type: this.recentType, result };
+            return result;
+        },
+
+        // The visible slice, each row tagged with the day group it starts (or null)
+        recentRows() {
+            const rows = this.recentFiles().slice(0, this.recentLimit);
+            let last = null;
+            return rows.map(n => {
+                const group = this.recentGroup(n.modified);
+                const header = group !== last ? group : null;
+                last = group;
+                return { note: n, header };
+            });
+        },
+
+        recentGroup(iso) {
+            const d = new Date(iso);
+            if (isNaN(d.getTime())) return this.t('recent.older');
+            // Whole calendar days between that day and today (round() absorbs DST hours)
+            const today = new Date(); today.setHours(0, 0, 0, 0);
+            const thatDay = new Date(d); thatDay.setHours(0, 0, 0, 0);
+            const days = Math.round((today - thatDay) / 86400000);
+            if (days <= 0) return this.t('recent.today');
+            if (days === 1) return this.t('recent.yesterday');
+            if (days < 7) return this.t('recent.this_week');
+            if (days < 30) return this.t('recent.this_month');
+            return this.t('recent.older');
+        },
+
+        recentWhen(iso) {
+            const d = new Date(iso);
+            if (isNaN(d.getTime())) return '';
+            const mins = Math.floor((Date.now() - d) / 60000);
+            if (mins < 1) return this.t('editor.just_now');
+            if (mins < 60) return this.t('editor.minutes_ago', { count: mins });
+            if (mins < 24 * 60) return this.t('editor.hours_ago', { count: Math.floor(mins / 60) });
+            if (mins < 7 * 24 * 60) return this.t('editor.days_ago', { count: Math.floor(mins / 1440) });
+            const sameYear = d.getFullYear() === new Date().getFullYear();
+            return d.toLocaleDateString(this.currentLocale, sameYear
+                ? { month: 'short', day: 'numeric' }
+                : { year: 'numeric', month: 'short', day: 'numeric' });
+        },
+
+        openFirstRecent() {
+            const first = this.recentFiles()[0];
+            if (first) this.openItem(first.path, first.type);
+        },
+
         getSharedPanelItems() {
             return this._sharedNotePathsList.map((path) => {
                 const noMd = path.replace(/\.md$/i, '');
