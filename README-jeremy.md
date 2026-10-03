@@ -111,10 +111,29 @@ Xiaolai is 12 MB, against ~480 KB for every other Excalidraw font combined, so
   now keeps the `source` the scene was loaded with; new scenes keep the address
   they were created on.
 
+## Versioning — bump on every fork change
+
+`VERSION` carries a fork suffix: `<upstream version>+jc.<n>`, e.g. `0.31.7+jc.1`
+(same style as the kanban-tui fork). **Bump `n` in every commit that changes
+anything under `frontend/`**, and reset it to `+jc.1` when merging a new upstream
+release (take upstream's number, add the suffix).
+
+Why: the version is the browser cache key. Script URLs are `app.js?v=<version>`
+and the service worker serves `/static/` cache-first under a cache named after the
+version. Ship new frontend code under an unchanged version and every browser that
+already has the app keeps running the old `app.js` against the new `index.html`
+(which is not cached) — new buttons appear but do nothing, until a hard reload.
+
+`+jc.n` is a valid PEP 440 local version, so `pyproject.toml` (which reads
+`VERSION`) accepts it; after changing it, `uv sync --reinstall-package
+notediscovery` refreshes the installed metadata. `release.ps1` is upstream's and
+expects plain `X.Y.Z` — don't use it on this fork.
+
 ## Keeping up with upstream
 
 ```bash
 git fetch upstream && git merge upstream/main
+# VERSION will conflict on every upstream release: take theirs, append +jc.1
 ```
 
 The feature is deliberately structured to keep this cheap:
