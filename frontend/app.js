@@ -77,7 +77,7 @@ const LOCAL_SETTINGS = {
     // String settings with validation
     viewMode: { key: 'viewMode', type: 'string', default: 'split', valid: ['edit', 'split', 'preview'] },
     // Homepage layout. Cards stay the default so existing vaults look unchanged.
-    homepageView: { key: 'homepageView', type: 'string', default: 'cards', valid: ['cards', 'list'] },
+    homepageView: { key: 'homepageView', type: 'string', default: 'list', valid: ['cards', 'list'] },
     // JSON settings
     favorites: { key: 'noteFavorites', type: 'json', default: [] },
 };
@@ -519,7 +519,8 @@ function noteApp() {
         // Homepage constants
         HOMEPAGE_MAX_NOTES: 50,
         // Read before init() so the first paint matches the saved layout.
-        homepageView: localStorage.getItem('homepageView') === 'list' ? 'list' : 'cards',
+        // Fork: list is the default; cards only when a viewer has chosen it.
+        homepageView: localStorage.getItem('homepageView') === 'cards' ? 'cards' : 'list',
         // Name filter for the current homepage folder. Separate from searchQuery,
         // which is the sidebar's full-text search.
         homepageNameQuery: '',
