@@ -1,4 +1,4 @@
-# Fork notes — mrchenoz/NoteDiscovery
+# Fork notes — jeremy-oz/NoteDiscovery
 
 Fork-specific notes for this branch. Not upstream documentation; upstream's docs
 live in `documentation/`. This file exists so known issues and fork-maintenance
@@ -29,7 +29,8 @@ Smaller fork changes to upstream behaviour:
 | | |
 |---|---|
 | Branch | `feature/excalidraw-editor` |
-| `origin` | `https://github.com/mrchenoz/NoteDiscovery.git` (detached copy since 2026-09-05; jeremy-oz/NoteDiscovery is retired) |
+| `origin` | `git@github.com:jeremy-oz/NoteDiscovery.git` — the one fork repo since 2026-10-03; mrchenoz/NoteDiscovery is retired |
+| Deployed | JCNotes (p5jc) and Lesson Notes (note.eduspace.cc) both build from this branch; Hunter builds and deploys. Check `GET /api/config` for the running version |
 | `upstream` | `https://github.com/gamosoft/notediscovery.git` (fetch only) |
 
 ## Local setup
@@ -158,6 +159,6 @@ script tags in `index.html`, the icon rail / mobile bottom bar in `index.html`
 `.gitignore` (both sides append there — keep both). Both are mechanical: keep upstream's version and
 re-add the `ExcalidrawEditor.teardown()` call / the `excalidraw-editor.js` tag.
 
-Last merged: **upstream v0.31.7** (3 Oct 2026; mrchenoz main also carries the 2026-09-05 theme-sync + editor guard).
+Last merged: **upstream v0.31.7** (3 Oct 2026). This branch also carries the 2026-09-05 theme sync + editor guard, merged in 2a7c613.
 
 After each merge: rebuild the bundle, start `run.py` against a scratch `NOTES_DIR`, and check `POST /api/upload-media` (new scene), `GET`/`PUT /api/media/<scene>` and that `/vendor/excalidraw/excalidraw.js` is served.
