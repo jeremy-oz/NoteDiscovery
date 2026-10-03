@@ -305,7 +305,9 @@
     "note_singular": "notatka",
     "note_plural": "notatki/ek",
     "folder_singular": "folder",
-    "folder_plural": "foldery/ów"
+    "folder_plural": "foldery/ów",
+    "view_cards": "Widok kart",
+    "view_list": "Widok listy"
   },
   "format": {
     "bold": "Pogrubienie",

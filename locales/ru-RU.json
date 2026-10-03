@@ -308,7 +308,9 @@
     "note_singular": "заметка",
     "note_plural": "заметок",
     "folder_singular": "папка",
-    "folder_plural": "папок"
+    "folder_plural": "папок",
+    "view_cards": "Вид карточками",
+    "view_list": "Вид списком"
   },
   "format": {
     "bold": "Жирный",

@@ -308,7 +308,9 @@
     "note_singular": "ノート",
     "note_plural": "ノート",
     "folder_singular": "フォルダ",
-    "folder_plural": "フォルダ"
+    "folder_plural": "フォルダ",
+    "view_cards": "カード表示",
+    "view_list": "リスト表示"
   },
   "format": {
     "bold": "太字",

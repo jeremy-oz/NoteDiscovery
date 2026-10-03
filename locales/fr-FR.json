@@ -308,7 +308,9 @@
     "note_singular": "note",
     "note_plural": "notes",
     "folder_singular": "dossier",
-    "folder_plural": "dossiers"
+    "folder_plural": "dossiers",
+    "view_cards": "Vue en cartes",
+    "view_list": "Vue en liste"
   },
   "format": {
     "bold": "Gras",

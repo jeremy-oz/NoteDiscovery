@@ -308,7 +308,9 @@
     "note_singular": "zapis",
     "note_plural": "zapiski",
     "folder_singular": "mapa",
-    "folder_plural": "mape"
+    "folder_plural": "mape",
+    "view_cards": "Pogled kartic",
+    "view_list": "Pogled seznama"
   },
   "format": {
     "bold": "Krepko",

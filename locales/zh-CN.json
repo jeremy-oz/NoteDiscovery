@@ -308,7 +308,9 @@
     "note_singular": "笔记",
     "note_plural": "笔记",
     "folder_singular": "文件夹",
-    "folder_plural": "文件夹"
+    "folder_plural": "文件夹",
+    "view_cards": "卡片视图",
+    "view_list": "列表视图"
   },
   "format": {
     "bold": "粗体",

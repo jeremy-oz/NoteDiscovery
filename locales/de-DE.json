@@ -308,7 +308,9 @@
     "note_singular": "Notiz",
     "note_plural": "Notizen",
     "folder_singular": "Ordner",
-    "folder_plural": "Ordner"
+    "folder_plural": "Ordner",
+    "view_cards": "Kartenansicht",
+    "view_list": "Listenansicht"
   },
   "format": {
     "bold": "Fett",

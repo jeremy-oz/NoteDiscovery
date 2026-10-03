@@ -308,7 +308,9 @@
     "note_singular": "note",
     "note_plural": "notes",
     "folder_singular": "folder",
-    "folder_plural": "folders"
+    "folder_plural": "folders",
+    "view_cards": "Card view",
+    "view_list": "List view"
   },
   "format": {
     "bold": "Bold",

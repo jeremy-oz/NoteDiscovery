@@ -20,6 +20,19 @@ from backend.utils import MEDIA_EXTENSIONS, get_media_type, scan_notes_fast_walk
 
 logger = logging.getLogger("uvicorn.error")
 
+# Same stylesheet as the in-app preview pane. Inlined so downloaded HTML stays
+# standalone, and so shared notes cannot drift from what the author sees.
+_MARKDOWN_PREVIEW_CSS_PATH = Path(__file__).parent.parent / "frontend" / "markdown-preview.css"
+
+
+def load_markdown_preview_css() -> str:
+    """Return the shared markdown-preview CSS, or log and return empty on failure."""
+    try:
+        return _MARKDOWN_PREVIEW_CSS_PATH.read_text(encoding="utf-8")
+    except OSError as e:
+        logger.error("Failed to read markdown preview CSS from %s: %s", _MARKDOWN_PREVIEW_CSS_PATH, e)
+        return ""
+
 
 # Regex used by parse_image_size_spec — see docstring below.
 _SIZE_RE = re.compile(r'^(\d+)(?:[xX](\d+))?$')
@@ -406,6 +419,8 @@ def generate_export_html(
     """
     Generate a standalone HTML document for a note.
     Uses marked.js for client-side markdown rendering.
+    Markdown element styles come from frontend/markdown-preview.css so
+    exported and shared notes match the in-app preview.
 
     Args:
         title: The note title (for <title> and display)
@@ -452,6 +467,8 @@ def generate_export_html(
         mathjax_js = 'https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-mml-chtml.js'
         mermaid_mjs = 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.min.mjs'
     
+    preview_css = load_markdown_preview_css()
+
     # Print toolbar HTML (only shown in preview mode)
     print_toolbar_html = '''
     <div class="print-toolbar">
@@ -573,236 +590,8 @@ def generate_export_html(
             color: var(--text-primary, #333333);
         }}
         
-        /* Markdown content styles */
-        .markdown-preview {{
-            line-height: 1.6;
-        }}
-        
-        .markdown-preview h1,
-        .markdown-preview h2,
-        .markdown-preview h3,
-        .markdown-preview h4,
-        .markdown-preview h5,
-        .markdown-preview h6 {{
-            margin-top: 1.5em;
-            margin-bottom: 0.5em;
-            font-weight: 600;
-            line-height: 1.25;
-        }}
-        
-        .markdown-preview h1 {{ font-size: 2em; border-bottom: 1px solid var(--border-color, #e1e4e8); padding-bottom: 0.3em; }}
-        .markdown-preview h2 {{ font-size: 1.5em; border-bottom: 1px solid var(--border-color, #e1e4e8); padding-bottom: 0.3em; }}
-        .markdown-preview h3 {{ font-size: 1.25em; }}
-        .markdown-preview h4 {{ font-size: 1em; }}
-        
-        .markdown-preview p {{
-            margin: 1em 0;
-        }}
-        
-        .markdown-preview a {{
-            color: var(--accent-primary, #0366d6);
-            text-decoration: none;
-        }}
-        
-        .markdown-preview a:hover {{
-            text-decoration: underline;
-        }}
-        
-        .markdown-preview img {{
-            max-width: 100%;
-            height: auto;
-            border-radius: 4px;
-        }}
-        
-        /* Inline code */
-        .markdown-preview code:not(pre code) {{ 
-            background-color: var(--bg-tertiary, #f6f8fa);
-            color: var(--accent-primary, #0366d6);
-            padding: 0.2rem 0.4rem;
-            border-radius: 0.25rem;
-            font-size: 0.875rem;
-            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-            font-weight: 500;
-        }}
-        
-        /* Code blocks */
-        .markdown-preview pre {{ 
-            background-color: var(--bg-tertiary, #f6f8fa);
-            margin-bottom: 1.5rem;
-            border-radius: 0.5rem;
-            overflow-x: auto;
-            border: 1px solid var(--border-primary, #e1e4e8);
-        }}
-        
-        .markdown-preview pre code {{
-            background: transparent;
-            padding: 1rem;
-            display: block;
-            font-size: 0.875rem;
-            line-height: 1.6;
-            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-            color: inherit;
-        }}
-        
-        .markdown-preview blockquote {{
-            margin: 1em 0;
-            padding: 0 1em;
-            border-left: 4px solid var(--accent-primary, #0366d6);
-            color: var(--text-secondary, #6a737d);
-        }}
-
-        /* Callouts — mirror the in-app preview. */
-        .markdown-preview .callout {{
-            margin: 1rem 0;
-            padding: 0.75rem 1rem;
-            border-left: 4px solid var(--callout-color, var(--accent-primary, #0366d6));
-            border-radius: 0.375rem;
-            background: var(--callout-bg, var(--bg-secondary, #f6f8fa));
-        }}
-        .markdown-preview .callout-title {{
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            font-weight: 600;
-            color: var(--callout-color, var(--accent-primary, #0366d6));
-            margin-bottom: 0.25rem;
-        }}
-        .markdown-preview .callout-icon {{
-            font-size: 1.1em;
-            line-height: 1;
-        }}
-        .markdown-preview .callout-body > :first-child {{ margin-top: 0; }}
-        .markdown-preview .callout-body > :last-child  {{ margin-bottom: 0; }}
-        .markdown-preview .callout-note      {{ --callout-color: #0969da; --callout-bg: rgba(9, 105, 218, 0.08); }}
-        .markdown-preview .callout-tip       {{ --callout-color: #1a7f37; --callout-bg: rgba(26, 127, 55, 0.08); }}
-        .markdown-preview .callout-important {{ --callout-color: #8250df; --callout-bg: rgba(130, 80, 223, 0.08); }}
-        .markdown-preview .callout-warning   {{ --callout-color: #9a6700; --callout-bg: rgba(154, 103, 0, 0.08); }}
-        .markdown-preview .callout-caution   {{ --callout-color: #d1242f; --callout-bg: rgba(209, 36, 47, 0.08); }}
-
-        .markdown-preview ul,
-        .markdown-preview ol {{
-            padding-left: 2em;
-            margin: 1em 0;
-        }}
-        /* Nested unordered lists: disc → circle → square (matches in-app preview) */
-        .markdown-preview ul {{ list-style-type: disc; }}
-        .markdown-preview ul ul {{ list-style-type: circle; }}
-        .markdown-preview ul ul ul {{ list-style-type: square; }}
-        .markdown-preview ol {{ list-style-type: decimal; }}
-        
-        .markdown-preview li {{
-            margin: 0.25em 0;
-        }}
-        
-        .markdown-preview table {{
-            border-collapse: collapse;
-            width: 100%;
-            margin: 1em 0;
-        }}
-        
-        .markdown-preview th,
-        .markdown-preview td {{
-            border: 1px solid var(--border-color, #e1e4e8);
-            padding: 0.5em 1em;
-            text-align: left;
-        }}
-        .markdown-preview th[align="left"],   .markdown-preview td[align="left"]   {{ text-align: left; }}
-        .markdown-preview th[align="right"],  .markdown-preview td[align="right"]  {{ text-align: right; }}
-        .markdown-preview th[align="center"], .markdown-preview td[align="center"] {{ text-align: center; }}
-        
-        .markdown-preview th {{
-            background-color: var(--bg-secondary, #f6f8fa);
-            font-weight: 600;
-        }}
-        
-        .markdown-preview hr {{
-            border: none;
-            border-top: 1px solid var(--border-color, #e1e4e8);
-            margin: 2em 0;
-        }}
-        
-        /* Task list styling */
-        .markdown-preview input[type="checkbox"] {{
-            margin-right: 0.5em;
-        }}
-        /* Loose lists wrap item content in a <p>, so both shapes need covering. */
-        .markdown-preview li:has(> input[type="checkbox"]),
-        .markdown-preview li:has(> p > input[type="checkbox"]) {{
-            list-style: none;
-            margin-left: -1.25em;
-        }}
-        
-        /* Enhanced Shell/Bash Syntax Highlighting */
-        .markdown-preview pre code.language-shell .hljs-meta,
-        .markdown-preview pre code.language-bash .hljs-meta,
-        .markdown-preview pre code.language-sh .hljs-meta {{
-            color: #7c3aed !important;
-            font-weight: 600;
-        }}
-        
-        .markdown-preview pre code.language-shell .hljs-built_in,
-        .markdown-preview pre code.language-bash .hljs-built_in,
-        .markdown-preview pre code.language-sh .hljs-built_in {{
-            color: #10b981 !important;
-            font-weight: 500;
-        }}
-        
-        .markdown-preview pre code.language-shell .hljs-string,
-        .markdown-preview pre code.language-bash .hljs-string,
-        .markdown-preview pre code.language-sh .hljs-string {{
-            color: #f59e0b !important;
-        }}
-        
-        .markdown-preview pre code.language-shell .hljs-variable,
-        .markdown-preview pre code.language-bash .hljs-variable,
-        .markdown-preview pre code.language-sh .hljs-variable {{
-            color: #06b6d4 !important;
-            font-weight: 500;
-        }}
-        
-        .markdown-preview pre code.language-shell .hljs-comment,
-        .markdown-preview pre code.language-bash .hljs-comment,
-        .markdown-preview pre code.language-sh .hljs-comment {{
-            color: #6b7280 !important;
-            font-style: italic;
-        }}
-        
-        .markdown-preview pre code.language-shell .hljs-keyword,
-        .markdown-preview pre code.language-bash .hljs-keyword,
-        .markdown-preview pre code.language-sh .hljs-keyword {{
-            color: #ec4899 !important;
-            font-weight: 600;
-        }}
-        
-        /* Enhanced PowerShell Syntax Highlighting */
-        .markdown-preview pre code.language-powershell .hljs-built_in,
-        .markdown-preview pre code.language-ps1 .hljs-built_in {{
-            color: #10b981 !important;
-            font-weight: 600;
-        }}
-        
-        .markdown-preview pre code.language-powershell .hljs-variable,
-        .markdown-preview pre code.language-ps1 .hljs-variable {{
-            color: #06b6d4 !important;
-            font-weight: 500;
-        }}
-        
-        .markdown-preview pre code.language-powershell .hljs-string,
-        .markdown-preview pre code.language-ps1 .hljs-string {{
-            color: #f59e0b !important;
-        }}
-        
-        .markdown-preview pre code.language-powershell .hljs-keyword,
-        .markdown-preview pre code.language-ps1 .hljs-keyword {{
-            color: #ec4899 !important;
-            font-weight: 600;
-        }}
-        
-        .markdown-preview pre code.language-powershell .hljs-comment,
-        .markdown-preview pre code.language-ps1 .hljs-comment {{
-            color: #6b7280 !important;
-            font-style: italic;
-        }}
+        /* Same element styles as the in-app preview */
+        {preview_css}
         
         /* Copy button for code blocks */
         .markdown-preview pre {{

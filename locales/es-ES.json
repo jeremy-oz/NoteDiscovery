@@ -308,7 +308,9 @@
     "note_singular": "nota",
     "note_plural": "notas",
     "folder_singular": "carpeta",
-    "folder_plural": "carpetas"
+    "folder_plural": "carpetas",
+    "view_cards": "Vista de tarjetas",
+    "view_list": "Vista de lista"
   },
   "format": {
     "bold": "Negrita",

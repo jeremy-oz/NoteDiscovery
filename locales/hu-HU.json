@@ -308,7 +308,9 @@
     "note_singular": "jegyzet",
     "note_plural": "jegyzet",
     "folder_singular": "mappa",
-    "folder_plural": "mappa"
+    "folder_plural": "mappa",
+    "view_cards": "Kártyanézet",
+    "view_list": "Listanézet"
   },
   "format": {
     "bold": "Félkövér",

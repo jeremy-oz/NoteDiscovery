@@ -308,7 +308,9 @@
     "note_singular": "nota",
     "note_plural": "note",
     "folder_singular": "cartella",
-    "folder_plural": "cartelle"
+    "folder_plural": "cartelle",
+    "view_cards": "Vista a schede",
+    "view_list": "Vista elenco"
   },
   "format": {
     "bold": "Grassetto",
