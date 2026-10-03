@@ -10,6 +10,13 @@ An **Excalidraw editor** for `*.excalidraw` vector scenes, alongside upstream's
 raster drawing editor. See [documentation/EXCALIDRAW.md](documentation/EXCALIDRAW.md)
 for how it works.
 
+Smaller fork changes to upstream behaviour:
+
+- **The homepage defaults to the list view** (upstream defaults to cards). A
+  viewer who picks cards keeps it; the choice is per browser (`homepageView` in
+  localStorage). Two lines in `app.js`: the `LOCAL_SETTINGS` default and the
+  initial `homepageView` value.
+
 | | |
 |---|---|
 | Branch | `feature/excalidraw-editor` |
@@ -87,6 +94,14 @@ Xiaolai is 12 MB, against ~480 KB for every other Excalidraw font combined, so
 - **React loaded from a CDN.** Replaced by the vendored bundle; the `importmap` in
   `index.html` is gone, since React is compiled in.
 
+- **Opening a scene from another address rewrote it.** `serializeAsJSON` stamps
+  `"source"` with `location.origin`, so a scene saved at `localhost:8000` and
+  opened at a LAN hostname (or another port) differed from the file on its first
+  `onChange` and was written back, on every open from that address. Vaults
+  reached from more than one address churned indefinitely. `serializeMounted()`
+  now keeps the `source` the scene was loaded with; new scenes keep the address
+  they were created on.
+
 ## Keeping up with upstream
 
 ```bash
@@ -101,8 +116,9 @@ The feature is deliberately structured to keep this cheap:
 - `closeMediaViewer()` mirrors upstream's method, so the four navigation teardown
   paths auto-merge instead of conflicting.
 
-Expect conflicts only around `closeMediaViewer()` / `viewMedia()` in `app.js` and
-the script tags in `index.html`. Both are mechanical: keep upstream's version and
+Expect conflicts only around `closeMediaViewer()` / `viewMedia()` in `app.js`, the
+script tags in `index.html`, the `homepageView` default lines, and the end of
+`.gitignore` (both sides append there — keep both). Both are mechanical: keep upstream's version and
 re-add the `ExcalidrawEditor.teardown()` call / the `excalidraw-editor.js` tag.
 
-Last merged: **upstream v0.30.1**.
+Last merged: **upstream v0.31.7** (3 Oct 2026).
