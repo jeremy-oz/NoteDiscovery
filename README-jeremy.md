@@ -26,6 +26,14 @@ Smaller fork changes to upstream behaviour:
   localStorage). Two lines in `app.js`: the `LOCAL_SETTINGS` default and the
   initial `homepageView` value.
 
+- **The title box renames an open media file** (Excalidraw scene, drawing, image
+  and so on); upstream only renames notes there. The extension is kept whatever
+  is typed, and the name passes the same check as a note name. An open scene is
+  saved, moved with `POST /api/media/move` and kept open under the new path
+  (`ExcalidrawEditor.rename()`), so undo history survives. Links in notes are
+  **not** rewritten: a toast says how many notes still mention the old filename.
+  Logic is `renameCurrentMedia()` in `app.js`.
+
 | | |
 |---|---|
 | Branch | `feature/excalidraw-editor` |

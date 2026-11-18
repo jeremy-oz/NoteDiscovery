@@ -744,6 +744,8 @@ function noteApp() {
         drawingHasRasterFromFile: false,
         /** Prevents overlapping drawingSave() runs (Ctrl+S + autosave + fast retries). */
         _drawingSaveInFlight: false,
+        /** True while renameCurrentMedia() is moving a file (blur + Enter can both fire). */
+        _mediaRenameBusy: false,
         /** If true, run drawingSave again after the current one finishes (coalesce). */
         _drawingSaveQueued: false,
         _drawingAutosaveTimeout: null,
@@ -5995,6 +5997,112 @@ function noteApp() {
             }
         },
         
+        /**
+         * Rename the open media file (drawing, Excalidraw scene, image, ...) from
+         * the title box. The extension is kept whatever is typed. Unlike a note
+         * rename this is not optimistic: an open scene is saved first and the
+         * file moved on the server before the page switches to the new path.
+         * Notes that embed or link the old filename are not rewritten; the
+         * toast says how many still mention it.
+         */
+        async renameCurrentMedia(inputEl) {
+            if (!this.currentMedia || this._mediaRenameBusy) return;
+
+            const oldPath = this.currentMedia;
+            const oldName = oldPath.split('/').pop();
+            const resetInput = () => {
+                if (inputEl && this.currentMedia) inputEl.value = this.currentMedia.split('/').pop();
+            };
+
+            let stem = (inputEl ? inputEl.value : '').trim();
+            if (stem === oldName) { resetInput(); return; }
+
+            const dot = oldName.lastIndexOf('.');
+            const ext = dot > 0 ? oldName.slice(dot) : '';
+            if (ext && stem.toLowerCase().endsWith(ext.toLowerCase())) {
+                stem = stem.slice(0, -ext.length).trim();
+            }
+            if (!stem) {
+                this.toast(this.t('notes.empty_name'), { type: 'warning' });
+                resetInput();
+                return;
+            }
+
+            // Same rules as a note name (single segment, no path separators)
+            const validation = FilenameValidator.validateFilename(stem);
+            if (!validation.valid) {
+                this.toast(this.getValidationErrorMessage(validation, 'note'), { type: 'warning' });
+                resetInput();
+                return;
+            }
+
+            const newName = validation.sanitized + ext;
+            const folder = oldPath.split('/').slice(0, -1).join('/');
+            const newPath = folder ? `${folder}/${newName}` : newName;
+            if (newPath === oldPath) { resetInput(); return; }
+
+            if (this.notes.some(n => n.path.toLowerCase() === newPath.toLowerCase())) {
+                this.toast(this.t('notes.already_exists', { name: newName }), { type: 'warning' });
+                resetInput();
+                return;
+            }
+
+            const move = async () => {
+                const response = await fetch('/api/media/move', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ oldPath, newPath })
+                });
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.detail || this.t('media.rename_failed'));
+                }
+            };
+
+            this._mediaRenameBusy = true;
+            try {
+                if (this.currentMediaType === 'drawing') {
+                    // Let the PNG reach disk under the old name before it moves
+                    await this.drawingSave();
+                    while (this._drawingSaveInFlight) await new Promise(r => setTimeout(r, 50));
+                }
+                const sceneOpen = typeof ExcalidrawEditor !== 'undefined' && ExcalidrawEditor.mountedFor() === oldPath;
+                if (sceneOpen) await ExcalidrawEditor.rename(newPath, move);
+                else await move();
+            } catch (error) {
+                console.error('Failed to rename media:', error);
+                this.toast(error.message || this.t('media.rename_failed'), { type: 'error' });
+                resetInput();
+                return;
+            } finally {
+                this._mediaRenameBusy = false;
+            }
+
+            this._optimisticRenameNote(oldPath, newPath);
+            this._rebuildTreeAfterMutation();
+            if (this.favoritesSet.has(oldPath)) {
+                this.favorites = this.favorites.map(f => f === oldPath ? newPath : f);
+                this.favoritesSet = new Set(this.favorites);
+                this.saveFavorites();
+            }
+            if (this.currentMedia === oldPath) {
+                this.currentMedia = newPath;
+                document.title = `${newName} - ${this.appName}`;
+                const encodedPath = newPath.split('/').map(segment => encodeURIComponent(segment)).join('/');
+                window.history.replaceState({ mediaPath: newPath }, '', `/${encodedPath}`);
+            }
+
+            // Links in notes are left alone; report how many still use the old name
+            let linked = 0;
+            try {
+                const response = await fetch(`/api/search?q=${encodeURIComponent(oldName)}`);
+                if (response.ok) linked = ((await response.json()).results || []).length;
+            } catch (_) { /* the rename itself succeeded */ }
+            if (linked > 0) {
+                this.toast(this.t('media.renamed_links', { name: oldName, count: linked }), { type: 'warning', durationMs: 10000 });
+            }
+        },
+
         // Delete current note
         async deleteCurrentNote() {
             if (!this.currentNote) return;

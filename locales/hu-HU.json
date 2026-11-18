@@ -266,7 +266,9 @@
   "media": {
     "confirm_delete": "Biztos törlöd a következőt:  \"{{name}}\"?",
     "upload_failed": "Hiba a fájl feltöltése során",
-    "no_valid_files": "Nem található érvényes fájl. Támogatott formátumok: {{formats}}"
+    "no_valid_files": "Nem található érvényes fájl. Támogatott formátumok: {{formats}}",
+    "rename_failed": "Failed to rename the file.",
+    "renamed_links": "Renamed. {{count}} note(s) still mention \"{{name}}\"; update those links by hand."
   },
   "move": {
     "failed_note": "Hiba a jegyzet mozgatásánál.",

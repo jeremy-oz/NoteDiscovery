@@ -266,7 +266,9 @@
   "media": {
     "confirm_delete": "¿Eliminar \"{{name}}\"?",
     "upload_failed": "Error al subir archivo",
-    "no_valid_files": "No se encontraron archivos válidos. Soporta: {{formats}}"
+    "no_valid_files": "No se encontraron archivos válidos. Soporta: {{formats}}",
+    "rename_failed": "Failed to rename the file.",
+    "renamed_links": "Renamed. {{count}} note(s) still mention \"{{name}}\"; update those links by hand."
   },
   "move": {
     "failed_note": "Error al mover la nota.",

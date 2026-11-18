@@ -266,7 +266,9 @@
   "media": {
     "confirm_delete": "「{{name}}」を削除しますか？",
     "upload_failed": "ファイルのアップロードに失敗しました",
-    "no_valid_files": "有効なファイルが見つかりません。対応: {{formats}}"
+    "no_valid_files": "有効なファイルが見つかりません。対応: {{formats}}",
+    "rename_failed": "Failed to rename the file.",
+    "renamed_links": "Renamed. {{count}} note(s) still mention \"{{name}}\"; update those links by hand."
   },
   "move": {
     "failed_note": "ノートの移動に失敗しました。",

@@ -264,7 +264,9 @@
   "media": {
     "confirm_delete": "Usunąć „{{name}}”?",
     "upload_failed": "Błąd przy wysyłaniu pliku",
-    "no_valid_files": "Nie znaleziono obsługiwanych plików. Wspierane formaty: {{formats}}"
+    "no_valid_files": "Nie znaleziono obsługiwanych plików. Wspierane formaty: {{formats}}",
+    "rename_failed": "Failed to rename the file.",
+    "renamed_links": "Renamed. {{count}} note(s) still mention \"{{name}}\"; update those links by hand."
   },
   "move": {
     "failed_note": "Nie udało się przenieść notatki.",

@@ -37,6 +37,7 @@
         root: null,         // React root currently mounted in the viewer pane
         api: null,          // ExcalidrawImperativeAPI for the mounted scene
         mountedFor: null,   // vault-relative path of the scene the editor is showing
+        renaming: false,    // true while rename() moves the file; other saves wait
         host: null,         // viewer-pane element the React root is mounted into
         app: null,          // Alpine component that mounted the scene (autosave delay)
         props: null,        // props of the rendered <Excalidraw>, re-rendered on theme change
@@ -137,8 +138,10 @@
      * nothing changed since the last successful save; coalesces overlapping calls
      * (Ctrl+S + autosave) like drawingSave() does.
      */
-    async function save() {
+    async function save(duringRename = false) {
         if (!EXCAL.api || !EXCAL.mountedFor || !EXCAL.lib) return;
+        // rename() holds every other save off the old path while the file moves
+        if (EXCAL.renaming && !duringRename) return;
         if (EXCAL.saveInFlight) {
             EXCAL.saveQueued = true;
             return;
@@ -321,6 +324,34 @@
         }
     }
 
+    /**
+     * Point the mounted scene at a new path while its file is renamed, without
+     * remounting (so undo history and the viewport survive). Pending changes are
+     * written to the old path first; `move` then renames the file on the server.
+     * Saves are held for the duration, or an autosave landing mid-move would
+     * recreate the old file. Throws, leaving the scene on the old path, when the
+     * flush or the move fails.
+     */
+    async function rename(newPath, move) {
+        const oldPath = EXCAL.mountedFor;
+        if (!oldPath) return move();
+        cancelAutosave();
+        EXCAL.renaming = true;
+        try {
+            while (EXCAL.saveInFlight) await new Promise((r) => setTimeout(r, 50));
+            await save(true);
+            if (EXCAL.mountedFor === oldPath && serializeMounted() !== EXCAL.lastSavedJSON) {
+                throw new Error('Could not save the scene before renaming');
+            }
+            await move();
+            if (EXCAL.mountedFor === oldPath) EXCAL.mountedFor = newPath;
+        } finally {
+            EXCAL.renaming = false;
+            // Picks up anything drawn while the file was moving
+            if (EXCAL.mountedFor) scheduleAutosave();
+        }
+    }
+
     /** Vault-relative path of the scene currently mounted, or null. */
     function mountedFor() {
         return EXCAL.mountedFor;
@@ -360,7 +391,8 @@
     global.ExcalidrawEditor = {
         createNew,
         mount,
-        save,
+        save: () => save(),
+        rename,
         teardown,
         mountedFor,
         setTheme,

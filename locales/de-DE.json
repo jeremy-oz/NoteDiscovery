@@ -266,7 +266,9 @@
   "media": {
     "confirm_delete": "\"{{name}}\" löschen?",
     "upload_failed": "Datei-Upload fehlgeschlagen",
-    "no_valid_files": "Keine gültigen Dateien gefunden. Unterstützt: {{formats}}"
+    "no_valid_files": "Keine gültigen Dateien gefunden. Unterstützt: {{formats}}",
+    "rename_failed": "Failed to rename the file.",
+    "renamed_links": "Renamed. {{count}} note(s) still mention \"{{name}}\"; update those links by hand."
   },
   "move": {
     "failed_note": "Verschieben der Notiz fehlgeschlagen.",

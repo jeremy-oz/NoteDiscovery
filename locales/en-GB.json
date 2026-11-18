@@ -266,7 +266,9 @@
   "media": {
     "confirm_delete": "Delete \"{{name}}\"?",
     "upload_failed": "Failed to upload file",
-    "no_valid_files": "No valid files found. Supported: {{formats}}"
+    "no_valid_files": "No valid files found. Supported: {{formats}}",
+    "rename_failed": "Failed to rename the file.",
+    "renamed_links": "Renamed. {{count}} note(s) still mention \"{{name}}\"; update those links by hand."
   },
   "move": {
     "failed_note": "Failed to move note.",
