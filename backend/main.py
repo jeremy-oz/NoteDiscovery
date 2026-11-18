@@ -3,7 +3,7 @@ NoteDiscovery - Self-Hosted Markdown Knowledge Base
 Main FastAPI application
 """
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Request, Form, Depends, APIRouter, Response
+from fastapi import FastAPI, HTTPException, UploadFile, File, Request, Form, Depends, APIRouter, Response, Query
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,7 +21,7 @@ import json
 import logging
 import zipfile
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Literal, Optional
 from html import escape as html_escape
 from urllib.parse import quote_plus, parse_qs, urlparse
 import hashlib
@@ -45,10 +45,17 @@ from .utils import (
     create_note_metadata,
     ensure_directories,
     create_folder,
+    note_name_conflict,
+    note_exists_exact,
+    folder_name_conflict,
+    folder_exists_exact,
+    path_has_hash,
     move_note,
     move_folder,
     rename_folder,
     delete_folder,
+    folder_is_empty,
+    is_in_folder,
     save_uploaded_image,
     _scan_cache_invalidate,
     validate_path_security,
@@ -56,6 +63,7 @@ from .utils import (
     collect_folder_files,
     get_all_tags,
     get_notes_by_tag,
+    get_notes_by_tags,
     get_templates,
     get_template_content,
     apply_template_placeholders,
@@ -63,6 +71,7 @@ from .utils import (
     get_backlinks,
 )
 from . import note_index
+from .broken_links import notes_with_broken_links
 from .plugins import PluginManager
 from .themes import get_available_themes, get_theme_css
 from .share import (
@@ -73,12 +82,20 @@ from .share import (
     get_note_by_token,
     delete_token_for_note,
     update_token_path,
+    update_token_prefix,
     get_all_shared_paths,
     is_slug_available,
     validate_slug,
     ShareSlugError,
 )
-from .export import generate_export_html, embed_images_as_base64, convert_wikilinks_to_html, strip_frontmatter
+from .export import (
+    generate_export_html,
+    embed_images_as_base64,
+    convert_wikilinks_to_html,
+    strip_frontmatter,
+    attachment_content_disposition,
+)
+from .mcp_http import build_mcp_router
 
 # Load configuration
 config_path = Path(__file__).parent.parent / "config.yaml"
@@ -170,6 +187,12 @@ if config.get('authentication', {}).get('enabled', False):
     
     if _is_default_secret:
         logger.critical("Using default secret_key - sessions can be forged! Change it in config.yaml")
+
+# MCP over Streamable HTTP at /mcp (opt-in)
+# Priority: MCP_ENABLED env var > mcp.enabled in config.yaml
+config['mcp'] = config.get('mcp') or {}
+if 'MCP_ENABLED' in os.environ:
+    config['mcp']['enabled'] = os.getenv('MCP_ENABLED', 'false').lower() in ('true', '1', 'yes')
 
 # Storage paths: env vars override config.yaml. Logged either way so the
 # resolved location is visible at startup.
@@ -553,8 +576,8 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     """
     # Only handle 401 errors specially
     if exc.status_code == 401:
-        # Check if this is an API request
-        if request.url.path.startswith('/api/'):
+        # Check if this is an API request (MCP clients need the 401 too)
+        if request.url.path.startswith('/api/') or request.url.path == '/mcp':
             return JSONResponse(
                 status_code=401,
                 content={"detail": exc.detail}
@@ -854,8 +877,15 @@ async def create_new_folder(request: Request, data: dict):
         folder_path = data.get('path', '')
         if not folder_path:
             raise HTTPException(status_code=400, detail="Folder path required")
+
+        notes_dir = config['storage']['notes_dir']
+        conflict = folder_name_conflict(notes_dir, folder_path)
+        if conflict:
+            raise HTTPException(status_code=409, detail=f"A folder already exists at: {conflict}")
+        if path_has_hash(folder_path) and not folder_exists_exact(notes_dir, folder_path):
+            raise HTTPException(status_code=400, detail="Folder name cannot contain '#'")
         
-        success = create_folder(config['storage']['notes_dir'], folder_path)
+        success = create_folder(notes_dir, folder_path)
         
         if not success:
             raise HTTPException(status_code=500, detail="Failed to create folder")
@@ -1130,16 +1160,36 @@ async def move_media_endpoint(request: Request, data: dict):
         raise HTTPException(status_code=500, detail=safe_error_message(e, "Failed to move media file"))
 
 
+def _vault_file_paths() -> List[str]:
+    """Path of every note and media file, read fresh from disk."""
+    notes, _ = scan_notes_fast_walk(config['storage']['notes_dir'], use_cache=False, include_media=True)
+    return [note['path'] for note in notes]
+
+
+def _broken_links(paths_before: List[str], moves: Dict[str, str]) -> dict:
+    """The response field that lists the notes whose links a move broke."""
+    notes_dir = config['storage']['notes_dir']
+    broken = notes_with_broken_links(
+        paths_before,
+        moves,
+        lambda path: get_note_content(notes_dir, path),
+    )
+    return {"brokenLinksIn": broken}
+
+
 @api_router.post("/notes/move", tags=["Notes"])
 @limiter.limit("30/minute")
 async def move_note_endpoint(request: Request, data: dict):
-    """Move a note to a different folder"""
+    """Move a note to a different folder. With reportBrokenLinks, list the notes whose links to it broke."""
     try:
         old_path = data.get('oldPath', '')
         new_path = data.get('newPath', '')
+        report_links = data.get('reportBrokenLinks') is True
         
         if not old_path or not new_path:
             raise HTTPException(status_code=400, detail="Both oldPath and newPath required")
+
+        paths_before = _vault_file_paths() if report_links else []
         
         success, error_msg = move_note(config['storage']['notes_dir'], old_path, new_path)
         
@@ -1152,40 +1202,125 @@ async def move_note_endpoint(request: Request, data: dict):
         # Run plugin hooks
         plugin_manager.dispatch('on_note_save', note_path=new_path, content='')
         
-        return {
+        result = {
             "success": True,
             "oldPath": old_path,
             "newPath": new_path,
             "message": "Note moved successfully"
         }
+        if report_links:
+            result.update(_broken_links(paths_before, {old_path: new_path}))
+        return result
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=safe_error_message(e, "Failed to move note"))
 
 
+# Declared before POST /notes/{note_path:path}, which would otherwise take this
+# request as a save of a note called "replace".
+@api_router.post("/notes/replace", tags=["Notes"])
+@limiter.limit("60/minute")
+async def replace_in_note(request: Request, data: dict):
+    """
+    Replace one exact occurrence of a text in an existing note.
+
+    Lets a client change part of a note without sending the whole file back.
+    Nothing is written unless old_str appears exactly once, so an edit based on
+    a stale copy of the note fails instead of overwriting it.
+
+    Args:
+        data: Dictionary with 'path', 'old_str' and 'new_str' (may be empty to delete)
+    """
+    try:
+        note_path = data.get('path', '')
+        old_str = data.get('old_str', '')
+        new_str = data.get('new_str', '')
+
+        if not note_path:
+            raise HTTPException(status_code=400, detail="path is required")
+        if not isinstance(old_str, str) or not old_str:
+            raise HTTPException(status_code=400, detail="old_str is required")
+        if 'new_str' not in data or not isinstance(new_str, str):
+            raise HTTPException(status_code=400, detail="new_str is required (use an empty string to delete)")
+
+        existing_content = get_note_content(config['storage']['notes_dir'], note_path)
+        if existing_content is None:
+            raise HTTPException(status_code=404, detail="Note not found")
+
+        # Match against the same text GET /notes/{path} returns, so a client can
+        # copy old_str straight from what it read.
+        content = plugin_manager.dispatch('on_note_load', note_path=note_path, content=existing_content)
+
+        occurrences = content.count(old_str)
+        if occurrences == 0:
+            raise HTTPException(status_code=409, detail="old_str not found in note")
+        if occurrences > 1:
+            raise HTTPException(
+                status_code=409,
+                detail=f"old_str found {occurrences} times; include more surrounding text to make it unique"
+            )
+
+        new_content = content.replace(old_str, new_str, 1)
+
+        # Same save path as a regular save
+        transformed_content = plugin_manager.dispatch('on_note_save', note_path=note_path, content=new_content)
+
+        success = save_note(config['storage']['notes_dir'], note_path, transformed_content)
+
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to save note")
+
+        return {
+            "success": True,
+            "path": note_path,
+            "message": "Note updated successfully",
+            "hash": _content_hash(transformed_content)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=safe_error_message(e, "Failed to update note"))
+
+
 @api_router.post("/folders/move", tags=["Folders"])
 @limiter.limit("20/minute")
 async def move_folder_endpoint(request: Request, data: dict):
-    """Move a folder to a different location"""
+    """Move a folder to a different location. With reportBrokenLinks, list the notes whose links into it broke."""
     try:
         old_path = data.get('oldPath', '')
         new_path = data.get('newPath', '')
+        report_links = data.get('reportBrokenLinks') is True
         
         if not old_path or not new_path:
             raise HTTPException(status_code=400, detail="Both oldPath and newPath required")
+
+        paths_before = _vault_file_paths() if report_links else []
         
         success, error_msg = move_folder(config['storage']['notes_dir'], old_path, new_path)
         
         if not success:
             raise HTTPException(status_code=400, detail=error_msg or "Failed to move folder")
+
+        # Share tokens store a note path. A folder move changes every note under it.
+        update_token_prefix(config['storage']['notes_dir'], old_path, new_path)
         
-        return {
+        result = {
             "success": True,
             "oldPath": old_path,
             "newPath": new_path,
             "message": "Folder moved successfully"
         }
+        if report_links:
+            old_prefix = old_path.strip('/') + '/'
+            new_prefix = new_path.strip('/') + '/'
+            moves = {
+                path: new_prefix + path[len(old_prefix):]
+                for path in paths_before
+                if path.startswith(old_prefix)
+            }
+            result.update(_broken_links(paths_before, moves))
+        return result
     except HTTPException:
         raise
     except Exception as e:
@@ -1207,6 +1342,9 @@ async def rename_folder_endpoint(request: Request, data: dict):
         
         if not success:
             raise HTTPException(status_code=400, detail=error_msg or "Failed to rename folder")
+
+        # rename_folder is move_folder; tokens still need the new prefix.
+        update_token_prefix(config['storage']['notes_dir'], old_path, new_path)
         
         return {
             "success": True,
@@ -1222,13 +1360,17 @@ async def rename_folder_endpoint(request: Request, data: dict):
 
 @api_router.delete("/folders/{folder_path:path}", tags=["Folders"])
 @limiter.limit("20/minute")
-async def delete_folder_endpoint(request: Request, folder_path: str):
-    """Delete a folder and all its contents"""
+async def delete_folder_endpoint(request: Request, folder_path: str, require_empty: bool = False):
+    """Delete a folder and all its contents. With require_empty, only delete an empty folder."""
     try:
         if not folder_path:
             raise HTTPException(status_code=400, detail="Folder path required")
+
+        notes_dir = config['storage']['notes_dir']
+        if require_empty and (Path(notes_dir) / folder_path).is_dir() and not folder_is_empty(notes_dir, folder_path):
+            raise HTTPException(status_code=409, detail=f"Folder is not empty: {folder_path}")
         
-        success = delete_folder(config['storage']['notes_dir'], folder_path)
+        success = delete_folder(notes_dir, folder_path)
         
         if not success:
             raise HTTPException(status_code=500, detail="Failed to delete folder")
@@ -1259,6 +1401,54 @@ async def list_tags():
         return {"tags": tags}
     except Exception as e:
         raise HTTPException(status_code=500, detail=safe_error_message(e, "Failed to load tags"))
+
+
+@api_router.get("/tags-match", tags=["Tags"])
+async def get_notes_by_several_tags(
+    tags: List[str] = Query(default=[]),
+    match: Literal["all", "any"] = "all",
+    limit: Optional[int] = None,
+    offset: int = 0
+):
+    """
+    Get the notes that have several tags, with optional pagination.
+
+    Args:
+        tags: Tags to filter by (case-insensitive). Repeat the parameter for each tag.
+        match: "all" for notes with every tag (default), "any" for notes with at least one
+        limit: Maximum number of notes to return (optional, no default limit)
+        offset: Number of notes to skip (default: 0)
+
+    Examples:
+        GET /api/tags-match?tags=docker&tags=linux            -> Notes with both tags
+        GET /api/tags-match?tags=docker&tags=linux&match=any  -> Notes with either tag
+    """
+    if not tags:
+        raise HTTPException(status_code=400, detail="At least one tag required")
+
+    try:
+        notes = get_notes_by_tags(config['storage']['notes_dir'], tags, match)
+
+        paginated = paginate(
+            items=notes,
+            limit=limit,
+            offset=offset,
+            sort_key=lambda x: x.get('path', '').lower()
+        )
+
+        response = {
+            "tags": tags,
+            "match": match,
+            "count": paginated.total,
+            "notes": paginated.items
+        }
+
+        if limit is not None:
+            response["pagination"] = paginated.to_dict()
+
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=safe_error_message(e, "Failed to get notes by tags"))
 
 
 @api_router.get("/tags/{tag_name}", tags=["Tags"])
@@ -1354,6 +1544,23 @@ async def get_template(request: Request, template_name: str):
         raise HTTPException(status_code=500, detail=safe_error_message(e, "Failed to get template"))
 
 
+def _refuse_note_name_clash(note_path: str, *, creating: bool = False) -> None:
+    """Block a write that would erase another note, or introduce a `#` name.
+
+    Autosave updates an existing note and must keep working, including a note
+    whose name already contains `#`. `creating` is for endpoints that only
+    create: an exact existing path is a clash there too.
+    """
+    notes_dir = config['storage']['notes_dir']
+    conflict = note_name_conflict(notes_dir, note_path)
+    if conflict:
+        raise HTTPException(status_code=409, detail=f"A note already exists at: {conflict}")
+    if creating and note_exists_exact(notes_dir, note_path):
+        raise HTTPException(status_code=409, detail=f"A note already exists at: {note_path}")
+    if path_has_hash(note_path) and not note_exists_exact(notes_dir, note_path):
+        raise HTTPException(status_code=400, detail="Note name cannot contain '#'")
+
+
 @api_router.post("/templates/create-note", tags=["Templates"])
 @limiter.limit("60/minute")
 async def create_note_from_template(request: Request, data: dict):
@@ -1372,6 +1579,8 @@ async def create_note_from_template(request: Request, data: dict):
         
         if not template_name or not note_path:
             raise HTTPException(status_code=400, detail="Template name and note path required")
+
+        _refuse_note_name_clash(note_path, creating=True)
         
         # Get template content
         template_content = get_template_content(config['storage']['notes_dir'], template_name)
@@ -1415,7 +1624,9 @@ async def create_note_from_template(request: Request, data: dict):
 @api_router.get("/notes", tags=["Notes"])
 async def list_notes(
     limit: Optional[int] = None,
-    offset: int = 0
+    offset: int = 0,
+    folder: Optional[str] = None,
+    recursive: bool = True
 ):
     """
     List all notes with metadata.
@@ -1427,14 +1638,22 @@ async def list_notes(
     Args:
         limit: Maximum number of notes to return (optional, no default limit)
         offset: Number of notes to skip (default: 0)
+        folder: Only return notes under this folder (optional)
+        recursive: With folder, also include subfolders (default: true)
     
     Examples:
         GET /api/notes              -> All notes
         GET /api/notes?limit=20     -> First 20 notes
         GET /api/notes?limit=20&offset=20 -> Notes 21-40
+        GET /api/notes?folder=projects&recursive=false -> Notes directly in projects
     """
     try:
         notes, folders = scan_notes_fast_walk(config['storage']['notes_dir'], include_media=True)
+
+        folder = folder.strip('/') if folder else None
+        if folder:
+            notes = [note for note in notes if is_in_folder(note['path'], folder, recursive)]
+            folders = [f for f in folders if f == folder or is_in_folder(f, folder, recursive)]
         
         # Apply pagination with consistent sorting by path for stable results
         result = paginate(
@@ -1458,6 +1677,16 @@ async def list_notes(
         raise HTTPException(status_code=500, detail=safe_error_message(e, "Failed to list notes"))
 
 
+def _content_hash(content: str) -> str:
+    """Fingerprint of a note as stored on disk, for the save conflict check.
+
+    Line endings are normalized the way a text-mode read sees them, so the hash of
+    what a save writes matches the hash of the same file read back later.
+    """
+    normalized = content.replace('\r\n', '\n').replace('\r', '\n')
+    return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
+
+
 @api_router.get("/notes/{note_path:path}", tags=["Notes"])
 async def get_note(note_path: str, include_backlinks: bool = True):
     """Get a specific note's content with optional backlinks"""
@@ -1466,12 +1695,17 @@ async def get_note(note_path: str, include_backlinks: bool = True):
         if content is None:
             raise HTTPException(status_code=404, detail="Note not found")
 
+        # Fingerprint the stored text, before any plugin transforms it: this is
+        # what a later save compares against to detect a write from elsewhere.
+        stored_hash = _content_hash(content)
+
         # Run on_note_load hook (can transform content, e.g., decrypt)
         content = plugin_manager.dispatch('on_note_load', note_path=note_path, content=content)
 
         response = {
             "path": note_path,
             "content": content,
+            "hash": stored_hash,
             "metadata": create_note_metadata(config['storage']['notes_dir'], note_path)
         }
         
@@ -1494,11 +1728,28 @@ async def create_or_update_note(request: Request, note_path: str, content: dict)
     """Create or update a note"""
     try:
         note_content = content.get('content', '')
+
+        # A different case is a different request for the same file on Windows
+        # and macOS. Refuse before save_note opens it and erases the other name.
+        _refuse_note_name_clash(note_path)
         
         # Check if this is a new note (doesn't exist yet)
         existing_content = get_note_content(config['storage']['notes_dir'], note_path)
         is_new_note = existing_content is None
-        
+
+        # Optional optimistic concurrency check. A client that sends base_hash (the
+        # fingerprint it loaded or last saved) gets a 409 instead of overwriting a
+        # file that something else rewrote in the meantime (another tab, an agent,
+        # a sync tool). Clients that omit it keep the previous last-write-wins.
+        base_hash = content.get('base_hash')
+        if base_hash and not is_new_note:
+            current_hash = _content_hash(existing_content)
+            if current_hash != base_hash:
+                return JSONResponse(status_code=409, content={
+                    "detail": "Note changed on disk since it was loaded",
+                    "hash": current_hash
+                })
+
         # If creating a new note, run on_note_create hook to allow plugins to modify initial content
         if is_new_note:
             note_content = plugin_manager.dispatch(
@@ -1519,7 +1770,8 @@ async def create_or_update_note(request: Request, note_path: str, content: dict)
             "success": True,
             "path": note_path,
             "message": "Note created successfully" if is_new_note else "Note saved successfully",
-            "content": note_content  # Return the (potentially modified) content
+            "content": note_content,  # Return the (potentially modified) content
+            "hash": _content_hash(transformed_content)  # Base for the next save
         }
     except HTTPException:
         raise
@@ -1802,7 +2054,7 @@ async def export_note_to_html(request: Request, note_path: str, theme: Optional[
                 content=html_content,
                 media_type="text/html",
                 headers={
-                    "Content-Disposition": f'attachment; filename="{filename}"'
+                    "Content-Disposition": attachment_content_disposition(filename)
                 }
             )
         else:
@@ -1818,7 +2070,9 @@ async def export_note_to_html(request: Request, note_path: str, theme: Optional[
 async def search(
     q: str,
     limit: Optional[int] = None,
-    offset: int = 0
+    offset: int = 0,
+    folder: Optional[str] = None,
+    recursive: bool = True
 ):
     """
     Search notes by content with optional pagination.
@@ -1827,9 +2081,12 @@ async def search(
         q: Search query string
         limit: Maximum number of results to return (optional, no default limit)
         offset: Number of results to skip (default: 0)
+        folder: Only return results under this folder (optional)
+        recursive: With folder, also include subfolders (default: true)
     
     Examples:
         GET /api/search?q=docker              -> All matching results
+        GET /api/search?q=docker&folder=work  -> Matching results under work
         GET /api/search?q=docker&limit=10     -> First 10 results
         GET /api/search?q=docker&limit=10&offset=10 -> Results 11-20
     """
@@ -1856,6 +2113,10 @@ async def search(
         hooked = plugin_manager.dispatch('on_search', query=q, results=results)
         plugin_replaced = hooked is not results
         results = hooked
+
+        folder = folder.strip('/') if folder else None
+        if folder:
+            results = [r for r in results if is_in_folder(r.get('path', ''), folder, recursive)]
 
         # Core results are sorted by path so pagination is reproducible between
         # requests (search_notes emits them in mtime order, which shifts as notes
@@ -1885,13 +2146,37 @@ async def search(
         raise HTTPException(status_code=500, detail=safe_error_message(e, "Search failed"))
 
 
+def _is_under_system_folder(path: str) -> bool:
+    """True when any parent folder of a vault-relative path starts with '_'.
+
+    Paths use forward slashes. The filename itself does not count, so
+    `_draft.md` in a normal folder is a normal note, while
+    `_attachments/readme.md` and `work/_documentation/intro.md` are system notes.
+    """
+    parent = path.rsplit("/", 1)[0] if "/" in path else ""
+    if not parent or parent == ".":
+        return False
+    return any(part.startswith("_") for part in parent.split("/") if part)
+
+
 @api_router.get("/graph", tags=["Graph"])
-async def get_graph():
-    """Graph data (nodes + resolved wikilink/markdown edges) for the visualizer."""
+async def get_graph(include_system_folders: bool = True):
+    """Graph data (nodes + resolved wikilink/markdown edges) for the visualizer.
+
+    `include_system_folders` defaults to true so existing clients keep the full
+    map. When false, notes under a folder whose name starts with `_` are
+    omitted, along with every edge that starts or ends on one of those notes.
+    """
     try:
         if not note_index.get_index().is_built():
             scan_notes_fast_walk(config['storage']['notes_dir'], include_media=False)
         nodes_paths, edges_tuples = note_index.get_graph_data()
+        if not include_system_folders:
+            nodes_paths = [p for p in nodes_paths if not _is_under_system_folder(p)]
+            edges_tuples = [
+                (s, t, et) for (s, t, et) in edges_tuples
+                if not _is_under_system_folder(s) and not _is_under_system_folder(t)
+            ]
         return {
             "nodes": [{"id": p, "label": Path(p).stem} for p in nodes_paths],
             "edges": [{"source": s, "target": t, "type": et} for (s, t, et) in edges_tuples],
@@ -2244,11 +2529,14 @@ async def catch_all(full_path: str, request: Request):
     if full_path.startswith('api/') or full_path.startswith('static/'):
         raise HTTPException(status_code=404, detail="Not found")
     
-    # Serve index.html with app name injected
+    # Serve index.html with app name and the configured default theme injected.
+    # The head script uses __DEFAULT_THEME__ when the browser has no saved preference.
     index_path = static_path / "index.html"
     async with aiofiles.open(index_path, 'r', encoding='utf-8') as f:
         content = await f.read()
-    return _html_page_response(_render_app_name_html(content), request)
+    content = _render_app_name_html(content)
+    content = content.replace('__DEFAULT_THEME__', DEFAULT_THEME)
+    return _html_page_response(content, request)
 
 
 # ============================================================================
@@ -2261,6 +2549,16 @@ async def catch_all(full_path: str, request: Request):
 # mounted last so a plugin cannot shadow a core endpoint.
 api_router.include_router(plugin_manager.build_router())
 app.include_router(api_router)
+
+# Mounted before pages_router so its catch-all GET doesn't shadow /mcp.
+# The tool client calls back in with the API key, so auth needs one.
+if config['mcp'].get('enabled', False):
+    if auth_enabled() and not get_api_key():
+        logger.warning("MCP endpoint NOT enabled: authentication is on but no API key is configured")
+    else:
+        app.include_router(build_mcp_router(get_api_key, require_auth, allowed_origins))
+        logger.info("MCP Streamable HTTP endpoint enabled at /mcp")
+
 app.include_router(pages_router)
 
 

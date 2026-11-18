@@ -57,6 +57,33 @@
         })();
     </script>
     
+    <!-- Preload the theme before Alpine renders, so a reload doesn't flash.
+         A saved preference wins; otherwise the configured default (__DEFAULT_THEME__).
+         data-theme is set only after the CSS is parsed and inserted. app.js reuses
+         #dynamic-theme and skips a second download when the id still matches. -->
+    <script>
+        (function() {
+            try {
+                const themeId = localStorage.getItem('noteDiscoveryTheme') || '__DEFAULT_THEME__';
+                if (!themeId) return;
+                const xhr = new XMLHttpRequest();
+                xhr.open('GET', '/api/themes/' + encodeURIComponent(themeId), false);
+                xhr.send();
+                if (xhr.status !== 200) return;
+                const css = JSON.parse(xhr.responseText).css;
+                if (typeof css !== 'string' || !css) return;
+                const styleEl = document.createElement('style');
+                styleEl.id = 'dynamic-theme';
+                styleEl.textContent = css;
+                document.head.appendChild(styleEl);
+                document.documentElement.setAttribute('data-theme', themeId);
+            } catch (e) {
+                // Fall back to the normal async applyTheme() path in app.js
+                console.error('Failed to preload theme:', e);
+            }
+        })();
+    </script>
+    
     <script defer src="/static/vendor/alpinejs/cdn.min.js"></script>
     <script src="/static/vendor/marked/marked.min.js"></script>
     
@@ -378,6 +405,43 @@
         /* Link drop zone cursor */
         .editor-textarea.link-drop-target {
             cursor: copy !important;
+        }
+
+        /* Wikilink / media autocomplete popup */
+        .wikilink-autocomplete {
+            min-width: 220px;
+            max-width: 360px;
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border-primary);
+            border-radius: 6px;
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+            padding: 4px;
+            overflow: hidden;
+        }
+        .wikilink-autocomplete-item {
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+            padding: 5px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .wikilink-autocomplete-item.active {
+            background-color: var(--bg-hover);
+        }
+        .wikilink-autocomplete-item .wl-label {
+            color: var(--text-primary);
+            font-size: 13px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .wikilink-autocomplete-item .wl-secondary {
+            color: var(--text-tertiary);
+            font-size: 11px;
+            margin-left: auto;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
         
         /* Folder tree styling - compact Obsidian-like */
@@ -2042,23 +2106,34 @@
                                     <p class="text-xs mt-1" style="color: var(--text-tertiary);" x-text="t('settings.auto_fill_note_title_desc')"></p>
                                 </div>
 
-                                <div class="mb-4">
-                                    <label class="flex items-center justify-between gap-3 cursor-pointer">
-                                        <span class="text-xs font-medium flex-1 min-w-0" style="color: var(--text-secondary);" x-text="t('settings.smart_scroll_sync')"></span>
-                                        <div
-                                            @click="smartScrollSync = !smartScrollSync; localStorage.setItem('smartScrollSync', smartScrollSync)"
-                                            class="relative w-10 h-5 rounded-full transition-colors cursor-pointer flex-shrink-0"
-                                            :style="smartScrollSync ? 'background-color: var(--accent-primary)' : 'background-color: var(--bg-tertiary)'"
-                                        >
-                                            <div
-                                                class="absolute top-0.5 left-0.5 w-4 h-4 rounded-full transition-transform"
-                                                :style="'background-color: var(--bg-primary);' + (smartScrollSync ? ' transform: translateX(20px);' : '')"
-                                            ></div>
-                                        </div>
-                                    </label>
-                                    <p class="text-xs mt-1" style="color: var(--text-tertiary);" x-text="t('settings.smart_scroll_sync_desc')"></p>
+                                <!-- Download notes as a zip (/api/archive): all of them, or one folder. Hidden in demo mode, where the
+                                     endpoint is disabled. A plain link, so the browser streams the file and shows its own progress.
+                                     Underscore folders are listed even when hidden in the tree: they hold attachments too. -->
+                                <div x-show="!demoMode" class="mb-4">
+                                    <label for="archive-folder" class="block text-xs font-medium mb-2" style="color: var(--text-secondary);" x-text="t('settings.your_notes')"></label>
+                                    <select
+                                        id="archive-folder"
+                                        x-model="archiveFolder"
+                                        class="w-full px-3 py-2 rounded border text-sm"
+                                        style="background-color: var(--bg-tertiary); color: var(--text-primary); border-color: var(--border-primary);"
+                                    >
+                                        <option value="" x-text="t('settings.download_notes_all')"></option>
+                                        <template x-for="folder in [...allFolders].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))" :key="folder">
+                                            <option :value="folder" x-text="folder"></option>
+                                        </template>
+                                    </select>
+                                    <a
+                                        :href="allFolders.includes(archiveFolder) ? '/api/archive?folder=' + encodeURIComponent(archiveFolder) : '/api/archive'"
+                                        download
+                                        class="mt-2 w-full flex items-center justify-center gap-2 px-3 py-2 text-sm rounded transition-colors cursor-pointer"
+                                        style="background-color: var(--bg-primary); color: var(--text-primary); border: 1px solid var(--border-primary);"
+                                        onmouseover="this.style.backgroundColor='var(--bg-hover)'"
+                                        onmouseout="this.style.backgroundColor='var(--bg-primary)'"
+                                        x-text="'📦 ' + t('settings.download_notes')"
+                                    ></a>
+                                    <p class="text-xs mt-1" style="color: var(--text-tertiary);" x-text="t('settings.download_notes_desc')"></p>
                                 </div>
-                                
+
                                 <!-- Logout (if auth enabled) - uses authEnabled from main app state -->
                                 <div x-show="authEnabled" class="mb-4">
                                     <label class="block text-xs font-medium mb-2" style="color: var(--text-secondary);" x-text="t('settings.account')"></label>
@@ -2261,8 +2336,8 @@
                                 </template>
                             </div>
                             
-                            <!-- Stats Bar - Only show when there are notes or folders -->
-                            <template x-if="homepageNotes().length > 0 || homepageFolders().length > 0">
+                            <!-- Stats Bar - Show when something is visible, or a name search is in progress -->
+                            <template x-if="homepageVisibleNotes().length > 0 || homepageVisibleFolders().length > 0 || ((homepageNameQuery || '').trim() && (homepageNotes().length > 0 || homepageFolders().length > 0))">
                                 <div class="mb-6 p-4 rounded-lg" style="background-color: var(--bg-secondary); border: 1px solid var(--border-primary);">
                                     <div class="relative mb-4">
                                         <input
@@ -2343,8 +2418,8 @@
                                 </div>
                             </template>
                             
-                            <!-- Empty State (for folder view) -->
-                            <template x-if="homepageNotes().length === 0 && homepageFolders().length === 0">
+                            <!-- Empty State: nothing visible, and the name box is empty -->
+                            <template x-if="!(homepageNameQuery || '').trim() && homepageVisibleNotes().length === 0 && homepageVisibleFolders().length === 0">
                                 <div class="flex flex-col items-center justify-center py-16 text-center">
                                     <svg class="mx-auto h-24 w-24 mb-4" style="color: var(--text-tertiary); opacity: 0.5;" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
@@ -2363,8 +2438,8 @@
                                 </div>
                             </template>
                             
-                            <!-- Name filter matched nothing in a folder that still has items -->
-                            <template x-if="(homepageNotes().length > 0 || homepageFolders().length > 0) && homepageVisibleNotes().length === 0 && homepageVisibleFolders().length === 0">
+                            <!-- Name filter matched nothing. Hidden system folders are not a search miss. -->
+                            <template x-if="(homepageNameQuery || '').trim() && (homepageNotes().length > 0 || homepageFolders().length > 0) && homepageVisibleNotes().length === 0 && homepageVisibleFolders().length === 0">
                                 <p class="text-sm text-center py-8" style="color: var(--text-tertiary);" x-text="t('sidebar.no_results')"></p>
                             </template>
 
@@ -2944,10 +3019,13 @@
                                 <textarea
                                     id="note-editor"
                                     x-model="noteContent"
-                                    @input="autoSave(); updateSyntaxHighlight()"
+                                    @keydown="wlOnKeydown($event)"
+                                    @input="autoSave(); updateSyntaxHighlight(); wlDetectToken()"
                                     @scroll="syncOverlayScroll()"
                                     @keydown.enter="handleEditorEnterKey($event)"
                                     @keydown.tab="handleTabKey($event)"
+                                    @click="wlDetectToken()"
+                                    @blur="wlClose()"
                                     @dblclick="trimSelectionTrailingSpace($event)"
                                     @drop="onEditorDrop($event)"
                                     @dragover.prevent="onEditorDragOver($event)"
@@ -3444,7 +3522,24 @@
             </button>
         </div>
     </div>
-    
+
+    <!-- Wikilink / media autocomplete popup -->
+    <div x-show="wikilinkAutocomplete.open"
+         @mousedown.prevent
+         class="wikilink-autocomplete"
+         :style="`position: fixed; top: ${wikilinkAutocomplete.position.top}px; left: ${wikilinkAutocomplete.position.left}px; z-index: 1200;`"
+         x-cloak>
+        <template x-for="(item, idx) in wikilinkAutocomplete.items" :key="item.insert + idx">
+            <div class="wikilink-autocomplete-item"
+                 :class="{'active': idx === wikilinkAutocomplete.activeIndex}"
+                 @mouseenter="wikilinkAutocomplete.activeIndex = idx"
+                 @click="wlAccept(item)">
+                <span class="wl-label" x-text="item.label"></span>
+                <span class="wl-secondary" x-show="item.secondary" x-text="item.secondary"></span>
+            </div>
+        </template>
+    </div>
+
     <!-- Template Selection Modal -->
     <div x-show="showTemplateModal" 
          @click.self="showTemplateModal = false; selectedTemplate = ''; newTemplateNoteName = ''"

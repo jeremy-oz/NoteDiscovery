@@ -167,6 +167,6 @@ script tags in `index.html`, the icon rail / mobile bottom bar in `index.html`
 `.gitignore` (both sides append there — keep both). Both are mechanical: keep upstream's version and
 re-add the `ExcalidrawEditor.teardown()` call / the `excalidraw-editor.js` tag.
 
-Last merged: **upstream v0.31.7** (3 Oct 2026). This branch also carries the 2026-09-05 theme sync + editor guard, merged in 2a7c613.
+Last merged: **upstream v0.35.0** (19 Nov 2026; only `VERSION` conflicted). This branch also carries the 2026-09-05 theme sync + editor guard, merged in 2a7c613.
 
 After each merge: rebuild the bundle, start `run.py` against a scratch `NOTES_DIR`, and check `POST /api/upload-media` (new scene), `GET`/`PUT /api/media/<scene>` and that `/vendor/excalidraw/excalidraw.js` is served.

@@ -87,67 +87,74 @@ Add this to your `~/.cursor/mcp.json` (or Claude Desktop config):
 
 > **Note:** The `PYTHONPATH` is required so Python can find the `mcp_server` module. On Windows, use backslashes: `"PYTHONPATH": "C:\\path\\to\\NoteDiscovery"`
 
-### Advanced: 24×7 / Remote Access (mcp-proxy)
+### Remote Access (Streamable HTTP)
 
-The setups above spawn the MCP server **per session** — your AI client starts a fresh container/process every time you open a chat and tears it down when you close it. That's the recommended default: zero setup, no auth surface, no long-lived process to maintain.
+The setups above spawn the MCP server **per session**. Your AI client starts a fresh container or process every time you open a chat and tears it down when you close it. That's the recommended default: zero setup and no extra network exposure.
 
-If you'd rather run the MCP server as a **long-lived service** so one host serves many devices, use the community tool [mcp-proxy](https://github.com/sparfenyuk/mcp-proxy) to wrap the stdio server and expose it over SSE:
+If you'd rather connect by URL, so that several devices share one NoteDiscovery instance or the client runs on another machine, NoteDiscovery can serve MCP itself over **Streamable HTTP** at `/mcp`. It runs in the NoteDiscovery process, so there's no extra service or port to manage.
 
-```bash
-# Make sure the image is fresh
-docker pull ghcr.io/gamosoft/notediscovery:latest
+**1. Enable it** (it is off by default):
 
-# Run mcp-proxy in front of the stdio server
-# (`--` separates mcp-proxy flags from the wrapped command — required so the
-#  parser doesn't try to interpret `--rm`, `-i`, etc. as its own arguments)
-mcp-proxy --port 3000 -- docker run --rm -i \
-  -e NOTEDISCOVERY_URL=https://notediscovery.homelab.local \
-  ghcr.io/gamosoft/notediscovery:latest python -m mcp_server
+```yaml
+# config.yaml
+mcp:
+  enabled: true
 ```
 
-> If you get `unrecognized arguments` from mcp-proxy, your version may use `--sse-port` instead of `--port`. Run `mcp-proxy --help` to check.
+or set `MCP_ENABLED=true` (Docker: `-e MCP_ENABLED=true`). The startup log confirms it with `MCP Streamable HTTP endpoint enabled at /mcp`.
 
-The example above assumes a specific topology: mcp-proxy runs on your host, the MCP server spawns as a short-lived container per SSE connection, and a separately-running NoteDiscovery instance is reachable at `https://notediscovery.homelab.local`. That's just one valid placement — **NoteDiscovery and mcp-proxy don't need to live in the same place**. `NOTEDISCOVERY_URL` can point at any reachable URL, for example:
+**2. Authentication.** `/mcp` uses the same auth as the REST API. With authentication enabled, you **must** set an API key (`authentication.api_key` or `AUTHENTICATION_API_KEY`). Without one, the endpoint stays off and a warning is logged. Clients send the key as `Authorization: Bearer <key>` or `X-API-Key: <key>`.
 
-- Remote homelab / LAN server (as in the example above): `https://notediscovery.homelab.local`
-- Same host via Docker's special hostname: `http://host.docker.internal:8000`
-- Sibling service in the same `docker-compose.yml`: `http://notediscovery:8000`
-- Native Python install on the same host: `http://localhost:8000`
-
-If you want both in one stack (NoteDiscovery + mcp-proxy together), a `docker-compose.yml` with both as services on the same Docker network is the cleanest setup — use the Docker service name for `NOTEDISCOVERY_URL` (`http://notediscovery:8000`) rather than a host-bound URL, which keeps the traffic on the internal network and survives host networking changes.
-
-> **Heads up on scope:** [`mcp-proxy`](https://github.com/sparfenyuk/mcp-proxy) is a community project maintained independently from NoteDiscovery, and its CLI flags, configuration options, and behavior can (and do) change between releases. This section shows the general integration pattern. for anything proxy-specific (CLI changes, TLS termination, auth in front of the proxy, multi-client behavior, daemonization, compose recipes, etc.) please consult their docs and issue tracker. If you hit something that looks NoteDiscovery-side (a tool returning unexpected data, the underlying MCP server crashing, missing capabilities) — just open an issue here. 🙂
-
-Then point each client at the SSE endpoint — one shared config across all your devices:
+**3. Point your client at it:**
 
 ```json
 {
   "mcpServers": {
     "notediscovery": {
-      "url": "http://your-host:3000/sse"
+      "type": "http",
+      "url": "https://notes.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer your-secure-api-key-here"
+      }
     }
   }
 }
 ```
 
-For production use, wrap `mcp-proxy` in a `systemd` unit or a `docker-compose` service with a restart policy so it survives reboots and crashes, or use a container.
+Claude Code:
+
+```bash
+claude mcp add --transport http notediscovery https://notes.example.com/mcp \
+  --header "Authorization: Bearer your-secure-api-key-here"
+```
+
+The exact JSON shape varies a little between clients (some infer the transport from `url` and don't need `"type"`), so check your client's docs for remote/HTTP servers.
+
+> **Exposure:** this is an HTTP endpoint on your NoteDiscovery server, so anyone who can reach it and holds the API key can read and write your notes. Serve it over HTTPS (e.g. behind a reverse proxy) when it leaves your LAN. If `server.allowed_origins` lists specific origins instead of `"*"`, requests carrying any other `Origin` header are rejected.
+
+The endpoint is stateless and returns plain JSON responses. It doesn't use SSE streams or session IDs, so it works through ordinary reverse proxies with no buffering or sticky-session configuration.
+
+#### Migrating from mcp-proxy / SSE
+
+Earlier versions of this guide used [mcp-proxy](https://github.com/sparfenyuk/mcp-proxy) to expose the stdio server over the now-deprecated SSE transport (`http://your-host:3000/sse`). The built-in endpoint replaces that: enable `mcp.enabled`, change your client config's URL to `https://<your NoteDiscovery URL>/mcp`, add the auth header, and retire the proxy.
 
 #### Trade-offs vs. the default per-session setup
 
-| | Per-session (default) | 24×7 with mcp-proxy |
+| | Per-session stdio (default) | Streamable HTTP (`/mcp`) |
 |---|---|---|
-| Setup complexity | None — JSON config and done | Persistent process to manage (systemd, docker-compose, etc.) |
-| Startup cost | ~1–2s container cold start per session | None — server is always warm |
-| Multi-device | Each device spawns its own | One shared instance |
-| Network exposure | None (local pipes only) | HTTP endpoint — **you** own the auth, TLS, and firewalling |
-| Concurrent clients | One per spawned container | Depends on how `mcp-proxy` is configured |
-| State / leak resilience | Fresh process every session | Long-running — restart policy recommended |
+| Setup complexity | None. Add the JSON config and you're done | Flip `mcp.enabled`, set an API key |
+| Startup cost | ~1–2s container cold start per session | None. The server is already running |
+| Multi-device | Each device spawns its own | Every device uses the same URL |
+| Network exposure | None (local pipes only) | Same as NoteDiscovery itself. **You** own the TLS and firewalling |
+| Extra processes | One per session | None |
 
-**Per-session stdio is the right default** for single-user, single-machine setups. Reach for the 24×7 setup only if you genuinely need shared or remote access and you're comfortable owning the auth and network-exposure side of it (e.g., LAN-only, or behind a reverse proxy with authentication).
+**Per-session stdio is the right default** for single-user, single-machine setups. Use `/mcp` when you want shared or remote access and NoteDiscovery is already reachable from where your AI client runs.
 
 ## Configuration
 
 ### Environment Variables
+
+These configure the stdio server (`python -m mcp_server` / `notediscovery-mcp`). The `/mcp` HTTP endpoint is configured on the NoteDiscovery server instead: see [Remote Access](#remote-access-streamable-http).
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
@@ -175,6 +182,7 @@ The MCP server provides these tools to AI assistants:
 |------|-------------|
 | `search_notes` | Full-text search across all notes (supports pagination) |
 | `list_notes` | List all notes with metadata (supports pagination) |
+| `list_folders` | List folders, including empty ones, with note and subfolder counts |
 | `get_note` | Read a specific note's content |
 | `get_recent_notes` | Get recently modified notes (last N days) |
 
@@ -183,7 +191,7 @@ The MCP server provides these tools to AI assistants:
 | Tool | Description |
 |------|-------------|
 | `list_tags` | List all tags with note counts |
-| `get_notes_by_tag` | Find notes with a specific tag (supports pagination) |
+| `get_notes_by_tag` | Find notes with one tag, or several with `tags` and `match` (`all` or `any`) (supports pagination) |
 | `get_graph` | Get knowledge graph data |
 | `get_backlinks` | Get notes that link to a specific note (reverse links) |
 
@@ -193,9 +201,12 @@ The MCP server provides these tools to AI assistants:
 |------|-------------|
 | `create_note` | Create or update a note |
 | `append_to_note` | Append content to an existing note (great for journals/logs) |
+| `edit_note` | Replace one exact piece of text in an existing note |
 | `move_note` | Move or rename a note |
 | `delete_note` | Delete a note |
 | `create_folder` | Create a new folder |
+| `move_folder` | Move or rename a folder with everything inside it |
+| `delete_folder` | Delete an empty folder. Refuses a folder with anything in it, and the vault root |
 
 ### Templates
 
@@ -226,6 +237,8 @@ Some tools support optional pagination parameters for large vaults:
 
 - `limit` - Maximum items to return (omit for all)
 - `offset` - Number of items to skip (for pagination)
+
+`search_notes` and `list_notes` also accept `folder`, to return only notes under that folder, and `recursive` (default: true), to include or skip its subfolders. Pagination applies after the folder filter.
 
 **Example prompts:**
 - "Search for notes about Python, but just show me the first 5 results"
@@ -264,6 +277,24 @@ Append content to an existing note without overwriting. Perfect for journals, lo
 
 ---
 
+### `edit_note`
+
+Change part of an existing note without resending the whole file. The text in `old_str` must appear exactly once in the note (as `get_note` returns it), including whitespace and line breaks. If it is missing or appears more than once, nothing is written.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | Yes | Path to existing note |
+| `old_str` | string | Yes | Exact text to replace (must be unique in the note) |
+| `new_str` | string | Yes | Replacement text (empty string deletes `old_str`) |
+
+To edit a section, include its heading in `old_str`.
+
+Search ignores accents, so `search_notes` for `strasse` can find a note that contains `Straße`. The snippet and `get_note` show the word as written. Copy `old_str` from that text. The search query itself will not match.
+
+**Example prompt:** "In project-alpha.md, change the deadline from March to April"
+
+---
+
 ### `move_note`
 
 Move or rename a note to a different location.
@@ -272,6 +303,8 @@ Move or rename a note to a different location.
 |-----------|------|----------|-------------|
 | `old_path` | string | Yes | Current note path |
 | `new_path` | string | Yes | New path (can include folder) |
+
+Other notes do not change. The response lists the notes with links that pointed to the old path and no longer work, so you can fix them. A link by note name, like `[[note]]`, keeps working, so it is not listed. Links inside code blocks and inline code are ignored. `move_folder` works the same way.
 
 **Example prompt:** "Move draft.md to published/final-article.md"
 
@@ -316,6 +349,12 @@ Once configured, you can interact with your notes naturally:
 > **AI:** *Uses `search_notes` to find relevant notes, then `get_note` to read them*
 > 
 > "I found 3 notes about Kubernetes. In your 'devops/k8s-setup.md' note from last week, you documented..."
+
+> **User:** "Find the note about strasse and change Straße to Spargel"
+>
+> **AI:** *Uses `search_notes` for `strasse`. The snippet shows `Straße`. `get_note` returns that same text, and `edit_note` copies it into `old_str`.*
+>
+> "Done. I updated Straße in recipes/sides.md."
 
 > **User:** "Create a new note summarizing our conversation"
 > 
@@ -372,6 +411,8 @@ If you have authentication enabled in NoteDiscovery:
    }
    ```
 
+   For the `/mcp` HTTP endpoint, send it as a header instead: `"headers": { "Authorization": "Bearer your-secure-api-key-here" }`.
+
 ## Troubleshooting
 
 ### "Connection refused" error
@@ -384,6 +425,11 @@ If you have authentication enabled in NoteDiscovery:
 
 - Check that your API key is correct
 - Ensure the API key in MCP config matches `config.yaml`
+
+### `/mcp` returns 404, 405, or HTML
+
+- The endpoint is off. Set `mcp.enabled: true` or `MCP_ENABLED=true` and restart
+- With authentication enabled, also set an API key. Check the startup log for `MCP endpoint NOT enabled`
 
 ### MCP server not starting
 
@@ -436,6 +482,8 @@ The MCP server is a **separate process** that:
 1. Communicates with AI assistants via stdio (stdin/stdout)
 2. Translates MCP requests into HTTP API calls
 3. Returns results back to the AI assistant
+
+With [Streamable HTTP](#remote-access-streamable-http) enabled, the same MCP server code runs inside NoteDiscovery instead. AI assistants POST JSON-RPC to `/mcp`, and tool calls reach the REST API over loopback using the configured API key.
 
 Your notes stay local. The MCP server just provides a bridge for AI access.
 

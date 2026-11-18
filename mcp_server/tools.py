@@ -22,6 +22,14 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "Search query. Can be keywords, phrases, or natural language."
                 },
+                "folder": {
+                    "type": "string",
+                    "description": "Only include notes under this folder (e.g., 'projects/2024')."
+                },
+                "recursive": {
+                    "type": "boolean",
+                    "description": "With folder, also include subfolders. Defaults to true."
+                },
                 "limit": {
                     "type": "integer",
                     "description": "Maximum number of results to return. Useful for large vaults. If not specified, returns all matches."
@@ -36,10 +44,18 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "list_notes",
-        "description": "List all notes in the knowledge base with their metadata (title, path, last modified date, size). Use this to get an overview of available notes or find notes by browsing.",
+        "description": "List notes in the knowledge base with their metadata (title, path, last modified date, size). Use this to get an overview of available notes or find notes by browsing. Use folder to list only part of the vault.",
         "inputSchema": {
             "type": "object",
             "properties": {
+                "folder": {
+                    "type": "string",
+                    "description": "Only include notes under this folder (e.g., 'projects/2024')."
+                },
+                "recursive": {
+                    "type": "boolean",
+                    "description": "With folder, also include subfolders. Defaults to true."
+                },
                 "limit": {
                     "type": "integer",
                     "description": "Maximum number of notes to return. Useful for large vaults. If not specified, returns all notes."
@@ -47,6 +63,24 @@ TOOLS: list[dict[str, Any]] = [
                 "offset": {
                     "type": "integer",
                     "description": "Number of notes to skip. Use with limit for pagination."
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "list_folders",
+        "description": "List folders in the knowledge base, including empty ones, with the number of notes and subfolders directly inside each one.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "parent": {
+                    "type": "string",
+                    "description": "Only list folders under this folder (e.g., 'projects'). If not specified, starts at the vault root."
+                },
+                "recursive": {
+                    "type": "boolean",
+                    "description": "Include all nested folders. Set to false to list only direct children. Defaults to true."
                 }
             },
             "required": []
@@ -81,13 +115,23 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "get_notes_by_tag",
-        "description": "Get all notes that have a specific tag. Use this to find related notes on a topic.",
+        "description": "Get all notes that have a specific tag, or several tags. Use this to find related notes on a topic.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "tag": {
                     "type": "string",
-                    "description": "Tag name (without the # symbol)"
+                    "description": "Tag name (without the # symbol). Use tags for several tags."
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Tag names (without the # symbol)."
+                },
+                "match": {
+                    "type": "string",
+                    "enum": ["all", "any"],
+                    "description": "With several tags: 'all' returns notes with every tag, 'any' returns notes with at least one. Defaults to 'all'."
                 },
                 "limit": {
                     "type": "integer",
@@ -98,7 +142,7 @@ TOOLS: list[dict[str, Any]] = [
                     "description": "Number of notes to skip. Use with limit for pagination."
                 }
             },
-            "required": ["tag"]
+            "required": []
         }
     },
     
@@ -179,6 +223,38 @@ TOOLS: list[dict[str, Any]] = [
         }
     },
     {
+        "name": "move_folder",
+        "description": "Move or rename a folder with all its notes and subfolders. Fails if a folder already exists at the new path. Other notes do not change: the result lists the notes whose links into it no longer work.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "old_path": {
+                    "type": "string",
+                    "description": "Current path of the folder"
+                },
+                "new_path": {
+                    "type": "string",
+                    "description": "New path for the folder"
+                }
+            },
+            "required": ["old_path", "new_path"]
+        }
+    },
+    {
+        "name": "delete_folder",
+        "description": "Delete an empty folder. Fails if the folder still has anything in it, or if it is the vault root.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path of the folder to delete"
+                }
+            },
+            "required": ["path"]
+        }
+    },
+    {
         "name": "append_to_note",
         "description": "Append content to an existing note without overwriting. Perfect for journals, logs, meeting notes, or collecting ideas incrementally.",
         "inputSchema": {
@@ -201,8 +277,30 @@ TOOLS: list[dict[str, Any]] = [
         }
     },
     {
+        "name": "edit_note",
+        "description": "Edit part of an existing note by replacing one exact piece of text, without resending the whole note. old_str must match the note content (as returned by get_note) exactly once, including whitespace and line breaks; otherwise nothing is written. To edit a section, include its heading in old_str. Prefer this over create_note for changes to existing notes.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the existing note"
+                },
+                "old_str": {
+                    "type": "string",
+                    "description": "Exact text to replace. Must appear exactly once in the note; add surrounding lines if needed to make it unique."
+                },
+                "new_str": {
+                    "type": "string",
+                    "description": "Replacement text. Use an empty string to delete old_str."
+                }
+            },
+            "required": ["path", "old_str", "new_str"]
+        }
+    },
+    {
         "name": "move_note",
-        "description": "Move or rename a note to a different path. Use this to reorganize notes or rename them.",
+        "description": "Move or rename a note to a different path. Use this to reorganize notes or rename them. Other notes do not change: the result lists the notes whose links to it no longer work.",
         "inputSchema": {
             "type": "object",
             "properties": {

@@ -12,9 +12,11 @@ import shutil
 import threading
 import time
 import traceback
+import unicodedata
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Any, TypeVar, Callable
 from datetime import datetime, timezone
@@ -315,6 +317,12 @@ def ensure_directories(config: dict):
         Path(dir_path).mkdir(parents=True, exist_ok=True)
 
 
+def is_in_folder(path: str, folder: str, recursive: bool = True) -> bool:
+    """True when a vault-relative path sits under `folder`. Paths use forward slashes."""
+    parent = path.rpartition('/')[0]
+    return parent == folder or (recursive and parent.startswith(f"{folder}/"))
+
+
 def create_folder(notes_dir: str, folder_path: str) -> bool:
     """Create a new folder in the notes directory."""
     full_path = Path(notes_dir) / folder_path
@@ -458,6 +466,9 @@ def move_note(notes_dir: str, old_path: str, new_path: str) -> tuple[bool, str]:
         return False, f"Source note does not exist: {old_path}"
     if new_full_path.exists():
         return False, f"A note already exists at: {new_path}"
+    conflict = note_name_conflict(notes_dir, new_path)
+    if conflict and _normalized_rel_path(conflict).lower() != _normalized_rel_path(old_path).lower():
+        return False, f"A note already exists at: {conflict}"
 
     _drop_path_caches(old_full_path)
 
@@ -485,6 +496,9 @@ def move_folder(notes_dir: str, old_path: str, new_path: str) -> tuple[bool, str
         return False, f"Source folder does not exist: {old_path}"
     if new_full_path.exists():
         return False, f"A folder already exists at: {new_path}"
+    conflict = folder_name_conflict(notes_dir, new_path)
+    if conflict and _normalized_rel_path(conflict).lower() != _normalized_rel_path(old_path).lower():
+        return False, f"A folder already exists at: {conflict}"
 
     _drop_prefix_caches(old_full_path)
 
@@ -530,6 +544,14 @@ def delete_folder(notes_dir: str, folder_path: str) -> bool:
         return False
 
 
+def folder_is_empty(notes_dir: str, folder_path: str) -> bool:
+    """True when the folder holds nothing at all, hidden files included."""
+    full_path = Path(notes_dir) / folder_path
+    if not validate_path_security(notes_dir, full_path) or not full_path.is_dir():
+        return False
+    return not any(full_path.iterdir())
+
+
 def _drop_path_caches(full_path: Path) -> None:
     """Evict the per-file mtime caches for a single note."""
     key = str(full_path)
@@ -561,6 +583,146 @@ def get_note_content(notes_dir: str, note_path: str) -> Optional[str]:
     
     with open(full_path, 'r', encoding='utf-8') as f:
         return f.read()
+
+
+def _normalized_rel_path(path: str) -> str:
+    return path.replace('\\', '/').strip('/')
+
+
+def _directory_entries(parent: Path):
+    try:
+        return list(parent.iterdir())
+    except OSError:
+        return []
+
+
+def _matching_child(parent: Path, name: str, *, want_dir: bool) -> Optional[str]:
+    """On-disk name of the child `name` refers to.
+
+    An exact name wins. Otherwise a sibling that differs only by case, when it
+    is the same kind of entry (file or directory). Symlinks are ignored.
+    Returns None when nothing in the directory matches.
+    """
+    if not parent.is_dir():
+        return None
+    folded = name.lower()
+    fallback = None
+    for entry in _directory_entries(parent):
+        try:
+            if entry.is_symlink():
+                continue
+            if want_dir != entry.is_dir():
+                continue
+        except OSError:
+            continue
+        if entry.name == name:
+            return entry.name
+        if entry.name.lower() == folded:
+            fallback = entry.name
+    return fallback
+
+
+def _resolve_existing_dir(root: Path, rel_dir: str) -> Optional[Path]:
+    """Walk `rel_dir` from `root`, following a case-only match. None if a segment is missing."""
+    current = root
+    if not rel_dir:
+        return current
+    for part in rel_dir.split('/'):
+        if not part or part == '.':
+            continue
+        match = _matching_child(current, part, want_dir=True)
+        if match is None:
+            return None
+        current = current / match
+    return current
+
+
+def note_name_conflict(notes_dir: str, note_path: str) -> Optional[str]:
+    """Existing note path that this path would hit, when the names differ by case.
+
+    An exact on-disk name is not a conflict: that write is an update of the same
+    note. A missing parent is not a conflict either. The path must stay inside
+    the notes directory.
+    """
+    normalized = _normalized_rel_path(note_path)
+    if not normalized.lower().endswith('.md'):
+        normalized += '.md'
+    full = Path(notes_dir) / normalized
+    if not validate_path_security(notes_dir, full):
+        return None
+    parent_rel, _, name = normalized.rpartition('/')
+    parent = _resolve_existing_dir(Path(notes_dir), parent_rel)
+    if parent is None:
+        return None
+    match = _matching_child(parent, name, want_dir=False)
+    if match is None or match == name:
+        return None
+    try:
+        real_parent = parent.relative_to(Path(notes_dir)).as_posix()
+    except ValueError:
+        real_parent = parent_rel
+    if real_parent == '.':
+        real_parent = ''
+    return f'{real_parent}/{match}' if real_parent else match
+
+
+def folder_name_conflict(notes_dir: str, folder_path: str) -> Optional[str]:
+    """Existing folder path that differs from `folder_path` only by case, or None."""
+    normalized = _normalized_rel_path(folder_path)
+    if not normalized:
+        return None
+    full = Path(notes_dir) / normalized
+    if not validate_path_security(notes_dir, full):
+        return None
+    root = Path(notes_dir)
+    current = root
+    resolved: list[str] = []
+    for part in normalized.split('/'):
+        match = _matching_child(current, part, want_dir=True)
+        if match is None:
+            return None
+        resolved.append(match)
+        current = current / match
+        if match != part:
+            return '/'.join(resolved)
+    return None
+
+
+def path_has_hash(path: str) -> bool:
+    """True when a note or folder name uses `#`, which heading links already own."""
+    return any('#' in part for part in _normalized_rel_path(path).split('/') if part)
+
+
+def note_exists_exact(notes_dir: str, note_path: str) -> bool:
+    """True when a note is stored under this exact path, not merely a different case."""
+    normalized = _normalized_rel_path(note_path)
+    if not normalized.lower().endswith('.md'):
+        normalized += '.md'
+    full = Path(notes_dir) / normalized
+    if not validate_path_security(notes_dir, full):
+        return False
+    parent_rel, _, name = normalized.rpartition('/')
+    parent = _resolve_existing_dir(Path(notes_dir), parent_rel)
+    if parent is None:
+        return False
+    return _matching_child(parent, name, want_dir=False) == name
+
+
+def folder_exists_exact(notes_dir: str, folder_path: str) -> bool:
+    """True when every segment of the folder path matches a directory name exactly."""
+    normalized = _normalized_rel_path(folder_path)
+    if not normalized:
+        return False
+    full = Path(notes_dir) / normalized
+    if not validate_path_security(notes_dir, full):
+        return False
+    current = Path(notes_dir)
+    for part in normalized.split('/'):
+        match = _matching_child(current, part, want_dir=True)
+        if match != part:
+            return False
+        current = current / match
+    return True
 
 
 def save_note(notes_dir: str, note_path: str, content: str) -> bool:
@@ -607,11 +769,57 @@ def delete_note(notes_dir: str, note_path: str) -> bool:
     return True
 
 
+@lru_cache(maxsize=4096)
+def _fold_char(ch: str) -> str:
+    return note_index.fold_for_search(ch)
+
+
+def _folded_match_spans(content: str, folded_query: str, limit: int) -> List[Tuple[int, int]]:
+    """Find folded_query in the folded content and return up to `limit`
+    (start, end) spans in the original content, so snippets keep the text as
+    written, accents included.
+
+    Folding can change the length of the text ("é" may be stored as "e" plus a
+    combining accent), so each folded character remembers which original
+    character it came from."""
+    if content.isascii():
+        # casefold() and lower() agree on ASCII, and the length stays the same
+        folded, origin = content.lower(), None
+    else:
+        parts: List[str] = []
+        origin = []
+        for i, ch in enumerate(content):
+            folded_ch = _fold_char(ch)
+            parts.append(folded_ch)
+            origin.extend([i] * len(folded_ch))
+        folded = "".join(parts)
+
+    spans: List[Tuple[int, int]] = []
+    pos = folded.find(folded_query)
+    while pos != -1 and len(spans) < limit:
+        end = pos + len(folded_query)
+        if origin is None:
+            spans.append((pos, end))
+        else:
+            start, stop = origin[pos], origin[end - 1] + 1
+            # Keep a combining accent with the letter it belongs to
+            while stop < len(content) and unicodedata.combining(content[stop]):
+                stop += 1
+            spans.append((start, stop))
+        pos = folded.find(folded_query, end)
+    return spans
+
+
 def search_notes(notes_dir: str, query: str) -> List[Dict]:
     """Full-text search through note contents. Narrow the candidate set via
-    the inverted index, then run the snippet extractor on each candidate."""
+    the inverted index, then run the snippet extractor on each candidate.
+    Matching ignores case and accents: "esparragos" finds "Espárragos"."""
     from html import escape
     results: List[Dict] = []
+
+    folded_query = note_index.fold_for_search(query)
+    if not folded_query:
+        return results
 
     ensure_index_built(notes_dir)
     note_index.ensure_search_index(notes_dir)
@@ -636,15 +844,13 @@ def search_notes(notes_dir: str, query: str) -> List[Dict]:
             with open(md_file, 'r', encoding='utf-8') as f:
                 content = f.read()
 
-            matches = list(re.finditer(re.escape(query), content, re.IGNORECASE))
-            if not matches:
+            spans = _folded_match_spans(content, folded_query, 3)
+            if not spans:
                 continue
 
             matched_lines = []
-            for match in matches[:3]:
-                start_index = match.start()
-                end_index = match.end()
-                matched_text = match.group()
+            for start_index, end_index in spans:
+                matched_text = content[start_index:end_index]
 
                 context_start = max(0, start_index - 15)
                 context_end = min(len(content), end_index + 15)
@@ -862,6 +1068,13 @@ def get_media_type(filename: str) -> Optional[str]:
     return None
 
 
+def _unquote_tag(tag: str) -> str:
+    """Drop the YAML quotes around a tag value: "2026" and '2026' are the tag 2026."""
+    if len(tag) >= 2 and tag[0] == tag[-1] and tag[0] in ('"', "'"):
+        return tag[1:-1].strip()
+    return tag
+
+
 def parse_tags(content: str) -> List[str]:
     """
     Extract tags from YAML frontmatter in markdown content.
@@ -921,12 +1134,12 @@ def parse_tags(content: str) -> List[str]:
                 if rest.startswith('[') and rest.endswith(']'):
                     # Parse inline array
                     tags_str = rest[1:-1]  # Remove [ and ]
-                    raw_tags = [t.strip() for t in tags_str.split(',')]
+                    raw_tags = [_unquote_tag(t.strip()) for t in tags_str.split(',')]
                     tags.extend([t.lower() for t in raw_tags if t])
                     break
                 elif rest:
                     # Single tag without brackets
-                    tags.append(rest.lower())
+                    tags.append(_unquote_tag(rest).lower())
                     break
                 else:
                     # Multi-line list format
@@ -934,7 +1147,7 @@ def parse_tags(content: str) -> List[str]:
             elif in_tags_list:
                 if stripped.startswith('-'):
                     # List item
-                    tag = stripped[1:].strip()
+                    tag = _unquote_tag(stripped[1:].strip())
                     if tag:
                         tags.append(tag.lower())
                 elif stripped and not stripped.startswith('#'):
@@ -957,9 +1170,16 @@ def get_all_tags(notes_dir: str) -> Dict[str, int]:
 
 def get_notes_by_tag(notes_dir: str, tag: str) -> List[Dict]:
     """All notes carrying `tag` (case-insensitive)."""
+    return get_notes_by_tags(notes_dir, [tag])
+
+
+def get_notes_by_tags(notes_dir: str, tags: List[str], match: str = "all") -> List[Dict]:
+    """Notes carrying all of `tags`, or any of them when `match` is "any" (case-insensitive)."""
     ensure_index_built(notes_dir)
     idx = note_index.get_index()
-    records = [idx.get_note_record(p) for p in note_index.get_paths_for_tag(tag.lower())]
+    path_sets = [set(note_index.get_paths_for_tag(tag.lower())) for tag in tags]
+    paths = set.union(*path_sets) if match == "any" else set.intersection(*path_sets)
+    records = [idx.get_note_record(p) for p in paths]
     matching = [
         {
             "name": r.name,

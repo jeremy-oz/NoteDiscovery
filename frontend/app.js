@@ -60,10 +60,6 @@ const LOCAL_SETTINGS = {
     tabInsertsTab: { key: 'tabInsertsTab', type: 'boolean', default: false },
     sidebarPanelCollapsed: { key: 'sidebarPanelCollapsed', type: 'boolean', default: false },
     autoFillNoteTitle: { key: 'autoFillNoteTitle', type: 'boolean', default: false },
-    // Landmark-anchored editor/preview scroll sync. Off by default: percentage sync
-    // is cheaper and adequate for plain prose, while anchoring earns its cost on
-    // notes with images, tables or code blocks.
-    smartScrollSync: { key: 'smartScrollSync', type: 'boolean', default: false },
     // String settings
     sortMode: { key: 'sortMode', type: 'string', default: 'a-z' },
     newButtonAction: {
@@ -102,20 +98,32 @@ const ErrorHandler = {
 };
 
 /**
+ * Encode one vault-relative path for a URL.
+ * Each segment is encoded on its own so a `#` stays in the path. Left raw, the
+ * browser treats it as a fragment and the request hits a different note.
+ */
+function encodeVaultPath(path) {
+    if (!path) return '';
+    return String(path).split('/').map((segment) => encodeURIComponent(segment)).join('/');
+}
+
+/**
  * Centralized filename validation
  * Supports Unicode characters (international text) but blocks dangerous filesystem characters.
  * Does NOT silently modify filenames - validates and returns status.
  */
 const FilenameValidator = {
-    // Characters that are forbidden in filenames across Windows/macOS/Linux
+    // Characters that are forbidden in filenames across Windows/macOS/Linux,
+    // plus `#`. A hash is legal on disk, but in this app it starts a heading
+    // link (`[[Note#heading]]`) and, unencoded, it is a URL fragment.
     // Windows: \ / : * ? " < > |
     // macOS: / :
     // Linux: / \0
     // Common set to block (including control characters)
-    FORBIDDEN_CHARS: /[\\/:*?"<>|\x00-\x1f]/,
+    FORBIDDEN_CHARS: /[\\/:*?"<>|#\x00-\x1f]/,
     
     // For display purposes - human readable list
-    FORBIDDEN_CHARS_DISPLAY: '\\ / : * ? " < > |',
+    FORBIDDEN_CHARS_DISPLAY: '\\ / : * ? " < > | #',
     
     /**
      * Validate a filename (single segment, no path separators)
@@ -320,6 +328,9 @@ function noteApp() {
         totalMatches: 0, // Total number of matches in the note
         isSaving: false,
         lastSaved: false,
+        noteBaseHash: null,        // Fingerprint of the current note as last read or written on disk
+        _saveQueued: false,        // A save was requested while another was in flight
+        _saveConflictOpen: false,  // The "changed elsewhere" prompt is showing; saves wait
         linkCopied: false,
         zenMode: false,
         // Hides only the .sidebar-panel content (files / search / tags / outline / etc.) while
@@ -393,6 +404,7 @@ function noteApp() {
         // Folder state
         folderTree: [],
         allFolders: [],
+        archiveFolder: '',  // Settings > Your notes: '' for all notes, else a path from allFolders
         expandedFolders: new Set(),
         dragOverFolder: null,  // Track which folder is being hovered during drag
         
@@ -457,6 +469,18 @@ function noteApp() {
         showNewDropdown: false,
         dropdownTargetFolder: null, // Folder context for "New" dropdown ('' = root, null = not set)
         dropdownPosition: { top: 0, left: 0 }, // Position for contextual dropdown
+
+        // Wikilink / media autocomplete (triggered by [[ for notes, ![[ for media)
+        wikilinkAutocomplete: {
+            open: false,
+            mode: 'note',        // 'note' | 'media'
+            query: '',
+            tokenStart: 0,       // index in noteContent right after the opening [[
+            items: [],           // [{label, secondary, insert, kind, prefix, modified}]
+            activeIndex: 0,
+            position: { top: 0, left: 0 },
+        },
+        _noteNameCounts: new Map(), // lower note stem -> count, for name-vs-path insertion
         
         // Template state
         showTemplateModal: false,
@@ -465,7 +489,6 @@ function noteApp() {
         newTemplateNoteName: '',
         newButtonAction: 'chooser',
         autoFillNoteTitle: false,
-        smartScrollSync: false,
         lastUsedTemplate: '',
         
         // New note / folder name modal (replaces window.prompt)
@@ -652,7 +675,10 @@ function noteApp() {
         },
 
         homepageVisibleFolders() {
-            return this._filterHomepageByName(this.homepageFolders(), 'folders');
+            const folders = this.hideUnderscoreFolders
+                ? this.homepageFolders().filter(f => !f.name.startsWith('_'))
+                : this.homepageFolders();
+            return this._filterHomepageByName(folders, 'folders');
         },
         
         // Helper: Format file size nicely
@@ -1207,10 +1233,13 @@ function noteApp() {
             localStorage.setItem('readableLineLength', this.readableLineLength);
         },
         
-        // Hide underscore folders toggle (hides _attachments, _templates, etc. from sidebar)
+        // Hide underscore folders toggle (sidebar tree and graph)
         toggleHideUnderscoreFolders() {
             this.hideUnderscoreFolders = !this.hideUnderscoreFolders;
             localStorage.setItem('hideUnderscoreFolders', this.hideUnderscoreFolders);
+            if (this.showGraph) {
+                this.initGraph();
+            }
         },
 
         // Tab inserts tab toggle (Tab key inserts tab character instead of changing focus)
@@ -1389,6 +1418,7 @@ function noteApp() {
                 overlay.scrollTop = textarea.scrollTop;
                 overlay.scrollLeft = textarea.scrollLeft;
             }
+            if (this.wikilinkAutocomplete.open) this.wlUpdatePosition();
         },
         
         // Highlight markdown syntax
@@ -1469,22 +1499,30 @@ function noteApp() {
         
         // Apply theme to document
         async applyTheme(themeId) {
-            // Load theme CSS from file
+            // Load theme CSS from file. The head preload may already have inserted
+            // #dynamic-theme for this id; skip the second download and the CSS write
+            // in that case. Highlight.js is still updated below, because the preload
+            // does not touch #highlight-theme.
             try {
-                const response = await fetch(`/api/themes/${themeId}`);
-                const data = await response.json();
-                
-                // Create or update style element
-                let styleEl = document.getElementById('dynamic-theme');
-                if (!styleEl) {
-                    styleEl = document.createElement('style');
-                    styleEl.id = 'dynamic-theme';
-                    document.head.appendChild(styleEl);
+                const existing = document.getElementById('dynamic-theme');
+                const alreadyLoaded = existing
+                    && existing.textContent
+                    && document.documentElement.getAttribute('data-theme') === themeId;
+
+                if (!alreadyLoaded) {
+                    const response = await fetch(`/api/themes/${themeId}`);
+                    const data = await response.json();
+
+                    let styleEl = existing;
+                    if (!styleEl) {
+                        styleEl = document.createElement('style');
+                        styleEl.id = 'dynamic-theme';
+                        document.head.appendChild(styleEl);
+                    }
+                    styleEl.textContent = data.css;
+
+                    document.documentElement.setAttribute('data-theme', themeId);
                 }
-                styleEl.textContent = data.css;
-                
-                // Set data attribute for theme-specific selectors
-                document.documentElement.setAttribute('data-theme', themeId);
                 
                 // Load appropriate Highlight.js theme for code syntax highlighting
                 const highlightTheme = document.getElementById('highlight-theme');
@@ -1715,6 +1753,7 @@ function noteApp() {
             this._noteLookup.byNameLower.clear();
             this._noteLookup.byEndPath.clear();
             this._mediaLookup.clear();
+            this._noteNameCounts.clear();
             
             const setFirst = (map, key, value) => {
                 if (!map.has(key)) map.set(key, value);
@@ -1742,6 +1781,10 @@ function noteApp() {
                 const nameWithoutMd = name.replace(/\.md$/i, '');
                 const nameWithoutMdLower = nameWithoutMd.toLowerCase();
                 const urlPath = path.replace(/\.md$/i, '');
+
+                // Count notes per stem so autocomplete can insert a bare name when
+                // unique and a folder-relative path when ambiguous.
+                this._noteNameCounts.set(nameWithoutMdLower, (this._noteNameCounts.get(nameWithoutMdLower) || 0) + 1);
                 
                 // Store all variations for fast lookup. The value is the note's URL
                 // path, so a wikilink can be resolved to a href and not just tested
@@ -1792,6 +1835,210 @@ function noteApp() {
         resolveMediaWikilink(mediaName) {
             const nameLower = mediaName.toLowerCase();
             return this._mediaLookup.get(nameLower) || null;
+        },
+
+        // ---- Wikilink / media autocomplete -------------------------------------
+        // Triggered while typing inside [[ (notes) or ![[ (media). Suggestions are
+        // computed client-side from the already-loaded notes list; no backend calls.
+
+        // Inspect the text before the caret and open/refresh the popup when the
+        // caret sits inside an unfinished [[ / ![[ token.
+        wlDetectToken() {
+            const textarea = document.getElementById('note-editor');
+            if (!textarea || document.activeElement !== textarea) { this.wlClose(); return; }
+            if (textarea.selectionStart !== textarea.selectionEnd) { this.wlClose(); return; }
+
+            const caret = textarea.selectionStart;
+            const before = this.noteContent.substring(0, caret);
+            const idx = before.lastIndexOf('[[');
+            if (idx === -1) { this.wlClose(); return; }
+
+            const query = before.substring(idx + 2);
+            // A valid in-progress target has no bracket, pipe, or newline, and stays short.
+            if (query.length > 100 || /[\[\]\n|]/.test(query)) { this.wlClose(); return; }
+
+            this.wikilinkAutocomplete.mode = (idx > 0 && before[idx - 1] === '!') ? 'media' : 'note';
+            this.wikilinkAutocomplete.tokenStart = idx + 2;
+            this.wikilinkAutocomplete.query = query;
+            this.wlComputeItems();
+
+            if (this.wikilinkAutocomplete.items.length === 0) { this.wlClose(); return; }
+            this.wikilinkAutocomplete.activeIndex = 0;
+            this.wikilinkAutocomplete.open = true;
+            this.$nextTick(() => this.wlUpdatePosition());
+        },
+
+        // Build the (capped) suggestion list for the current query and mode.
+        wlComputeItems() {
+            const WL_LIMIT = 8;
+            const q = this.wikilinkAutocomplete.query.trim().toLowerCase();
+            const isMedia = this.wikilinkAutocomplete.mode === 'media';
+            const results = [];
+
+            for (const note of this.notes) {
+                if (isMedia ? note.type === 'note' : note.type !== 'note') continue;
+
+                const path = note.path;
+                const folder = path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
+
+                let label, insert;
+                if (isMedia) {
+                    label = path.split('/').pop();   // filename with extension
+                    insert = label;
+                } else {
+                    const stem = note.name.replace(/\.md$/i, '');
+                    label = stem;
+                    // Bare name when unique, else folder-relative path (no extension).
+                    insert = (this._noteNameCounts.get(stem.toLowerCase()) || 0) > 1
+                        ? path.replace(/\.md$/i, '')
+                        : stem;
+                }
+
+                const labelLower = label.toLowerCase();
+                const pathLower = path.toLowerCase();
+                if (q && !labelLower.includes(q) && !pathLower.includes(q)) continue;
+
+                results.push({
+                    label,
+                    secondary: folder,
+                    insert,
+                    kind: note.type,
+                    prefix: q ? labelLower.startsWith(q) : false,
+                    modified: note.modified || '',
+                });
+            }
+
+            // Prefix matches first, then most-recently-modified, then alphabetical.
+            // `modified` is an ISO timestamp, so lexical compare orders by time.
+            results.sort((a, b) =>
+                (b.prefix - a.prefix) || b.modified.localeCompare(a.modified) || a.label.localeCompare(b.label));
+            this.wikilinkAutocomplete.items = results.slice(0, WL_LIMIT);
+        },
+
+        // Keyboard handling while the popup is open. Runs before the editor's
+        // Enter/Tab handlers (registered later on the same element), so
+        // stopImmediatePropagation keeps list-continuation and indent from firing.
+        wlOnKeydown(event) {
+            if (!this.wikilinkAutocomplete.open) return;
+            const wa = this.wikilinkAutocomplete;
+
+            switch (event.key) {
+                case 'ArrowDown':
+                    event.preventDefault(); event.stopImmediatePropagation();
+                    this.wlMove(1);
+                    return;
+                case 'ArrowUp':
+                    event.preventDefault(); event.stopImmediatePropagation();
+                    this.wlMove(-1);
+                    return;
+                case 'Enter':
+                case 'Tab':
+                    event.preventDefault(); event.stopImmediatePropagation();
+                    if (wa.items[wa.activeIndex]) this.wlAccept(wa.items[wa.activeIndex]);
+                    return;
+                case 'Escape':
+                    event.preventDefault(); event.stopImmediatePropagation();
+                    this.wlClose();
+                    return;
+                case 'ArrowLeft':
+                case 'ArrowRight':
+                case 'Home':
+                case 'End':
+                    this.wlClose();
+                    return;
+            }
+        },
+
+        wlMove(delta) {
+            const n = this.wikilinkAutocomplete.items.length;
+            if (!n) return;
+            this.wikilinkAutocomplete.activeIndex =
+                (this.wikilinkAutocomplete.activeIndex + delta + n) % n;
+        },
+
+        // Replace the in-progress token with the chosen target and close it off
+        // with ]] (reusing an existing trailing ]] if present).
+        wlAccept(item) {
+            if (!item) return;
+            const textarea = document.getElementById('note-editor');
+            if (!textarea) return;
+
+            const caret = textarea.selectionStart;
+            const before = this.noteContent.substring(0, this.wikilinkAutocomplete.tokenStart);
+            const after = this.noteContent.substring(caret);
+            const head = before + item.insert;
+
+            const hasClosing = after.startsWith(']]');
+            this.noteContent = hasClosing ? (head + after) : (head + ']]' + after);
+            const newCaret = head.length + 2; // after the ]]
+
+            this.wlClose();
+            this.$nextTick(() => {
+                textarea.focus();
+                textarea.selectionStart = textarea.selectionEnd = newCaret;
+                this.autoSave();
+                this.updateSyntaxHighlight();
+            });
+        },
+
+        wlClose() {
+            if (this.wikilinkAutocomplete.open) this.wikilinkAutocomplete.open = false;
+        },
+
+        // Position the popup just below the caret, clamped to the viewport.
+        wlUpdatePosition() {
+            const textarea = document.getElementById('note-editor');
+            if (!textarea) return;
+            const coords = this.wlCaretCoords(textarea, textarea.selectionStart);
+
+            const POPUP_W = 360;
+            const POPUP_H = 8 * 30 + 8; // rough height for up to 8 rows
+            let left = coords.left;
+            let top = coords.top;
+            if (left + POPUP_W > window.innerWidth) left = Math.max(4, window.innerWidth - POPUP_W - 4);
+            if (top + POPUP_H > window.innerHeight) top = Math.max(4, coords.top - coords.height - POPUP_H);
+            this.wikilinkAutocomplete.position = { top, left };
+        },
+
+        // Caret pixel coordinates inside a textarea via a hidden mirror element.
+        // Mirrors the textarea-caret-position technique (a plain textarea exposes
+        // no native caret geometry). Returns viewport-relative top/left of the line
+        // below the caret, plus the line height.
+        wlCaretCoords(textarea, position) {
+            const props = [
+                'direction', 'boxSizing', 'width', 'height', 'overflowX', 'overflowY',
+                'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth', 'borderStyle',
+                'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+                'fontStyle', 'fontVariant', 'fontWeight', 'fontStretch', 'fontSize', 'fontSizeAdjust',
+                'lineHeight', 'fontFamily', 'textAlign', 'textTransform', 'textIndent', 'textDecoration',
+                'letterSpacing', 'wordSpacing', 'tabSize', 'MozTabSize',
+            ];
+            const computed = window.getComputedStyle(textarea);
+            const div = document.createElement('div');
+            const style = div.style;
+            style.position = 'absolute';
+            style.visibility = 'hidden';
+            style.whiteSpace = 'pre-wrap';
+            style.wordWrap = 'break-word';
+            props.forEach(p => { style[p] = computed[p]; });
+
+            div.textContent = textarea.value.substring(0, position);
+            const span = document.createElement('span');
+            span.textContent = textarea.value.substring(position) || '.';
+            div.appendChild(span);
+            document.body.appendChild(div);
+
+            const lineHeight = parseInt(computed.lineHeight, 10) || parseInt(computed.fontSize, 10) * 1.2;
+            const top = span.offsetTop + parseInt(computed.borderTopWidth, 10);
+            const left = span.offsetLeft + parseInt(computed.borderLeftWidth, 10);
+            document.body.removeChild(div);
+
+            const rect = textarea.getBoundingClientRect();
+            return {
+                top: rect.top + top - textarea.scrollTop + lineHeight,
+                left: rect.left + left - textarea.scrollLeft,
+                height: lineHeight,
+            };
         },
         
         // Resolve a Markdown image path to a vault-relative path (forward slashes).
@@ -1917,8 +2164,7 @@ function noteApp() {
                 }
                 
                 // CRITICAL: Check if note already exists
-                const existingNote = this.notes.find(note => note.path === notePath);
-                if (existingNote) {
+                if (this.notePathTaken(notePath)) {
                     this.toast(this.t('notes.already_exists', { name: validation.sanitized }), { type: 'warning' });
                     return;
                 }
@@ -2290,6 +2536,10 @@ function noteApp() {
                 
                 if (endIdx === -1) return [];
                 
+                // "2026" and '2026' are the tag 2026: drop the YAML quotes
+                const unquote = (tag) => (tag.length >= 2 && tag[0] === tag[tag.length - 1] && (tag[0] === '"' || tag[0] === "'"))
+                    ? tag.slice(1, -1).trim()
+                    : tag;
                 const frontmatterLines = lines.slice(1, endIdx);
                 const tags = [];
                 let inTagsList = false;
@@ -2302,18 +2552,18 @@ function noteApp() {
                         const rest = stripped.substring(5).trim();
                         if (rest.startsWith('[') && rest.endsWith(']')) {
                             const tagsStr = rest.substring(1, rest.length - 1);
-                            const rawTags = tagsStr.split(',').map(t => t.trim());
+                            const rawTags = tagsStr.split(',').map(t => unquote(t.trim()));
                             tags.push(...rawTags.filter(t => t).map(t => t.toLowerCase()));
                             break;
                         } else if (rest) {
-                            tags.push(rest.toLowerCase());
+                            tags.push(unquote(rest).toLowerCase());
                             break;
                         } else {
                             inTagsList = true;
                         }
                     } else if (inTagsList) {
                         if (stripped.startsWith('-')) {
-                            const tag = stripped.substring(1).trim();
+                            const tag = unquote(stripped.substring(1).trim());
                             if (tag && !tag.startsWith('#')) {
                                 tags.push(tag.toLowerCase());
                             }
@@ -2469,6 +2719,20 @@ function noteApp() {
         
         _filenameFromPath(path) {
             return path.split('/').pop();
+        },
+
+        // Windows and macOS store these as one file. Rename already used this
+        // comparison; create and import must too, or `b` overwrites `B`.
+        notePathTaken(path) {
+            if (!path) return false;
+            const lower = path.toLowerCase();
+            return this.notes.some(n => n.path.toLowerCase() === lower);
+        },
+
+        folderPathTaken(path) {
+            if (!path) return false;
+            const lower = path.toLowerCase();
+            return this.allFolders.some(folder => folder.toLowerCase() === lower);
         },
         
         _inferTypeFromPath(path) {
@@ -3133,7 +3397,7 @@ function noteApp() {
             
             const joinPath = (folder, filename) => folder ? `${folder}/${filename}` : filename;
             let targetPath = joinPath(currentFolder, `${stem}.md`);
-            if (this.notes.some(n => n.path === targetPath)) {
+            if (this.notePathTaken(targetPath)) {
                 const ts = this._autoTitleTimestamp();
                 targetPath = joinPath(currentFolder, `${stem}-${ts}.md`);
             }
@@ -3145,7 +3409,7 @@ function noteApp() {
             this._rebuildTreeAfterMutation();
             
             try {
-                const response = await fetch(`/api/notes/${targetPath}`, {
+                const response = await fetch(`/api/notes/${encodeVaultPath(targetPath)}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ content })
@@ -4722,7 +4986,7 @@ function noteApp() {
                 // Close mobile sidebar when a note is selected
                 this.mobileSidebarOpen = false;
 
-                const response = await fetch(`/api/notes/${notePath}`);
+                const response = await fetch(`/api/notes/${encodeVaultPath(notePath)}`);
                 
                 // Check if note exists
                 if (!response.ok) {
@@ -4731,6 +4995,7 @@ function noteApp() {
                         window.history.replaceState({ homepageFolder: this.selectedHomepageFolder || '' }, '', '/');
                         this.currentNote = '';
                         this.noteContent = '';
+                        this.noteBaseHash = null;
                         this.closeMediaViewer();
                         document.title = this.appName;
                         return;
@@ -4746,6 +5011,7 @@ function noteApp() {
                 this._cachedRenderedHTML = '';
                 this._initializedVideoSources = new Set(); // Clear video cache for new note
                 this.noteContent = data.content;
+                this.noteBaseHash = data.hash || null;
                 // Note: scroll restoration happens later in the post-$nextTick block below
                 // (where the existing scrollToTop call used to live), via _restoreNoteScroll().
                 // Doing it there means a single, unified restore path instead of two racing
@@ -4911,6 +5177,66 @@ function noteApp() {
             this.highlightInPreview(searchTerm);
         },
         
+        // Fold text the way the backend search does (case and accents ignored),
+        // so a note found with "esparragos" also highlights "Espárragos".
+        // ς and ß follow Python's casefold(), which the backend uses.
+        foldForSearch(text) {
+            return text.toLowerCase()
+                .replace(/ς/g, 'σ')
+                .replace(/ß/g, 'ss')
+                .normalize('NFD')
+                .replace(/\p{Mn}/gu, '');
+        },
+        
+        // Find the term in the folded text and return [start, end] spans in the
+        // original text, so the highlight covers the text as written. Folding can
+        // change the length ("ß" becomes "ss", a combining accent disappears), so
+        // each folded character remembers where it came from.
+        findFoldedMatches(text, term, limit = Infinity) {
+            const foldedTerm = this.foldForSearch(term);
+            if (!foldedTerm) return [];
+            
+            let folded;
+            let start = null;
+            let end = null;
+            if (/^[\x00-\x7f]*$/.test(text)) {
+                folded = text.toLowerCase();
+            } else {
+                const parts = [];
+                start = [];
+                end = [];
+                let i = 0;
+                for (const ch of text) {
+                    const foldedCh = this.foldForSearch(ch);
+                    parts.push(foldedCh);
+                    for (let k = 0; k < foldedCh.length; k++) {
+                        start.push(i);
+                        end.push(i + ch.length);
+                    }
+                    i += ch.length;
+                }
+                folded = parts.join('');
+            }
+            
+            const spans = [];
+            let pos = folded.indexOf(foldedTerm);
+            while (pos !== -1 && spans.length < limit) {
+                const matchEnd = pos + foldedTerm.length;
+                if (start === null) {
+                    spans.push([pos, matchEnd]);
+                } else {
+                    let stop = end[matchEnd - 1];
+                    // Keep a combining accent with the letter it belongs to
+                    while (stop < text.length && /\p{Mn}/u.test(text[stop])) {
+                        stop++;
+                    }
+                    spans.push([start[pos], stop]);
+                }
+                pos = folded.indexOf(foldedTerm, matchEnd);
+            }
+            return spans;
+        },
+        
         // Highlight search term in the editor textarea
         highlightInEditor(searchTerm, shouldFocus = false) {
             const editor = this._domCache.editor || document.getElementById('editor');
@@ -4918,11 +5244,11 @@ function noteApp() {
             
             // For textarea, we can't directly highlight text, but we can scroll to first match
             const content = editor.value;
-            const lowerContent = content.toLowerCase();
-            const lowerTerm = searchTerm.toLowerCase();
-            const index = lowerContent.indexOf(lowerTerm);
+            const [match] = this.findFoldedMatches(content, searchTerm, 1);
             
-            if (index !== -1) {
+            if (match) {
+                const [index, matchEnd] = match;
+                
                 // Calculate line number to scroll to
                 const textBefore = content.substring(0, index);
                 const lineNumber = textBefore.split('\n').length;
@@ -4934,7 +5260,7 @@ function noteApp() {
                 // Only focus and select if explicitly requested (e.g., from search result click)
                 if (shouldFocus) {
                     editor.focus();
-                    editor.setSelectionRange(index, index + searchTerm.length);
+                    editor.setSelectionRange(index, matchEnd);
                     
                     // Blur immediately so the selection stays visible but editor isn't focused
                     setTimeout(() => editor.blur(), 100);
@@ -4969,20 +5295,18 @@ function noteApp() {
                 textNodes.push(node);
             }
             
-            const lowerTerm = searchTerm.toLowerCase();
             let matchIndex = 0;
             
             // Highlight matches in text nodes
             textNodes.forEach(textNode => {
                 const text = textNode.textContent;
-                const lowerText = text.toLowerCase();
+                const spans = this.findFoldedMatches(text, searchTerm);
                 
-                if (lowerText.includes(lowerTerm)) {
+                if (spans.length > 0) {
                     const fragment = document.createDocumentFragment();
                     let lastIndex = 0;
-                    let index;
                     
-                    while ((index = lowerText.indexOf(lowerTerm, lastIndex)) !== -1) {
+                    for (const [index, matchEnd] of spans) {
                         // Add text before match
                         if (index > lastIndex) {
                             fragment.appendChild(
@@ -4994,7 +5318,7 @@ function noteApp() {
                         const mark = document.createElement('mark');
                         mark.className = 'search-highlight';
                         mark.setAttribute('data-match-index', matchIndex);
-                        mark.textContent = text.substring(index, index + searchTerm.length);
+                        mark.textContent = text.substring(index, matchEnd);
                         
                         // First match is active (styled via CSS)
                         if (matchIndex === 0) {
@@ -5004,7 +5328,7 @@ function noteApp() {
                         fragment.appendChild(mark);
                         matchIndex++;
                         
-                        lastIndex = index + searchTerm.length;
+                        lastIndex = matchEnd;
                     }
                     
                     // Add remaining text
@@ -5190,8 +5514,7 @@ function noteApp() {
         async createNote(folderPath = null, directPath = null) {
             if (directPath) {
                 const notePath = directPath.endsWith('.md') ? directPath : `${directPath}.md`;
-                const existingNote = this.notes.find(note => note.path === notePath);
-                if (existingNote) {
+                if (this.notePathTaken(notePath)) {
                     this.toast(this.t('notes.already_exists', { name: notePath }), { type: 'warning' });
                     return;
                 }
@@ -5287,8 +5610,7 @@ function noteApp() {
                 const notePath = targetFolder
                     ? `${targetFolder}/${validatedName}.md`
                     : (validatedName.endsWith('.md') ? validatedName : `${validatedName}.md`);
-                const existingNote = this.notes.find(note => note.path === notePath);
-                if (existingNote) {
+                if (this.notePathTaken(notePath)) {
                     this.toast(this.t('notes.already_exists', { name: notePath }), { type: 'warning' });
                     return;
                 }
@@ -5306,7 +5628,7 @@ function noteApp() {
             }
             const validatedName = validation.sanitized;
             const folderPath = targetFolder ? `${targetFolder}/${validatedName}` : validatedName;
-            const existingFolder = this.allFolders.find(folder => folder === folderPath);
+            const existingFolder = this.allFolders.find(folder => folder.toLowerCase() === folderPath.toLowerCase());
             if (existingFolder) {
                 this.toast(this.t('folders.already_exists', { name: validatedName }), { type: 'warning' });
                 return;
@@ -5324,7 +5646,7 @@ function noteApp() {
             this._rebuildTreeAfterMutation();
             
             try {
-                const response = await fetch(`/api/notes/${notePath}`, {
+                const response = await fetch(`/api/notes/${encodeVaultPath(notePath)}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ content: '' })
@@ -5448,6 +5770,10 @@ function noteApp() {
             const pathParts = folderPath.split('/');
             pathParts[pathParts.length - 1] = validatedName;
             const newPath = pathParts.join('/');
+            if (newPath !== folderPath && this.folderPathTaken(newPath)) {
+                this.toast(this.t('folders.already_exists', { name: validatedName }), { type: 'warning' });
+                return;
+            }
             
             const ok = await this._finalizeRenameFolder(folderPath, newPath);
             if (ok) this.closeRenameFolderModal();
@@ -5485,10 +5811,12 @@ function noteApp() {
                     body: JSON.stringify({ oldPath: folderPath, newPath: newPath })
                 });
                 if (!response.ok) throw new Error('Server returned error');
+                await this.loadSharedNotePaths();
                 return true;
             } catch (error) {
                 ErrorHandler.handle('rename folder', error);
                 await this.loadNotes({ silent: true });
+                await this.loadSharedNotePaths();
                 return false;
             }
         },
@@ -5890,17 +6218,58 @@ function noteApp() {
         // Save current note
         async saveNote() {
             if (!this.currentNote) return;
-            
+            // The "changed elsewhere" prompt is open: nothing is written until the user chooses.
+            if (this._saveConflictOpen) return;
+            // One save at a time. A second request sent before the first returns would
+            // carry a stale base_hash and trip the conflict check against our own write.
+            if (this.isSaving) {
+                this._saveQueued = true;
+                return;
+            }
+
             this.isSaving = true;
-            
+            const notePath = this.currentNote;
+
             try {
-                const response = await fetch(`/api/notes/${this.currentNote}`, {
+                const response = await fetch(`/api/notes/${encodeVaultPath(notePath)}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ content: this.noteContent })
+                    // base_hash lets the server refuse (409) a write over a file that
+                    // changed on disk since we read it.
+                    body: JSON.stringify({ content: this.noteContent, base_hash: this.noteBaseHash })
                 });
-                
+
+                if (response.status === 409) {
+                    const detail = await response.json();
+                    if (notePath !== this.currentNote) {
+                        // The user already moved to another note: its base hash is not ours to touch.
+                        const name = notePath.split('/').pop().replace('.md', '');
+                        this.toast(this.t('notes.save_conflict_unsaved', { name }), { type: 'warning' });
+                        return;
+                    }
+                    // Nothing is in flight while the user decides.
+                    this.isSaving = false;
+                    if (await this._askSaveConflict(notePath)) {
+                        // Overwrite: take the disk version as the base, re-send ours.
+                        this.noteBaseHash = detail.hash || null;
+                        this._saveQueued = true;
+                    } else {
+                        // Reload: drop the pending autosave and show the version on disk.
+                        if (this.saveTimeout) {
+                            clearTimeout(this.saveTimeout);
+                            this.saveTimeout = null;
+                        }
+                        this._saveQueued = false;
+                        await this.loadNote(notePath, false);
+                    }
+                    return;
+                }
+
                 if (response.ok) {
+                    const result = await response.json();
+                    if (notePath === this.currentNote) {
+                        this.noteBaseHash = result.hash || null;
+                    }
                     this.lastSaved = true;
                     
                     // Update only the modified timestamp for the current note (no full reload needed)
@@ -5932,9 +6301,31 @@ function noteApp() {
                 ErrorHandler.handle('save note', error);
             } finally {
                 this.isSaving = false;
+                if (this._saveQueued) {
+                    this._saveQueued = false;
+                    this.saveNote();
+                }
             }
         },
-        
+
+        // Ask what to do when the server refused a save because the file changed on disk.
+        // Resolves true to overwrite. Escape, a click outside or "Reload" keep the disk version.
+        async _askSaveConflict(notePath) {
+            this._saveConflictOpen = true;
+            try {
+                const name = notePath.split('/').pop().replace('.md', '');
+                return await this.confirmModalAsk({
+                    title: this.t('notes.save_conflict_title'),
+                    message: this.t('notes.save_conflict_message', { name }),
+                    danger: true,
+                    confirmLabel: this.t('notes.save_conflict_overwrite'),
+                    cancelLabel: this.t('notes.save_conflict_reload')
+                });
+            } finally {
+                this._saveConflictOpen = false;
+            }
+        },
+
         // Rename current note
         async renameNote() {
             if (!this.currentNote) return;
@@ -5963,7 +6354,7 @@ function noteApp() {
             if (oldPath === newPath) return;
             
             // Check if a note with the new name already exists
-            const existingNote = this.notes.find(n => n.path.toLowerCase() === newPath.toLowerCase());
+            const existingNote = this.notePathTaken(newPath) ? { path: newPath } : null;
             if (existingNote) {
                 this.toast(this.t('notes.already_exists', { name: validatedName }), { type: 'warning' });
                 // Reset the name in the UI
@@ -5972,7 +6363,9 @@ function noteApp() {
             }
             
             // Optimistic rename: rewrite local path now + favorites + current
-            // note pointer + URL. POST new content, then DELETE old.
+            // note pointer. The file itself moves through /api/notes/move so a
+            // share token follows it. POST-then-DELETE revoked the link, because
+            // delete means the note is gone.
             this._optimisticRenameNote(oldPath, newPath);
             this._rebuildTreeAfterMutation();
             
@@ -5982,18 +6375,48 @@ function noteApp() {
                 this.saveFavorites();
             }
             this.currentNote = newPath;
+
+            // A pending autosave targets currentNote, which is already the new
+            // path. Let it fire and it would create the destination before the
+            // move, and the move would refuse to overwrite that file.
+            this.flushHistory();
+            if (this.saveTimeout) {
+                clearTimeout(this.saveTimeout);
+                this.saveTimeout = null;
+            }
             
             try {
-                const response = await fetch(`/api/notes/${newPath}`, {
+                const response = await fetch('/api/notes/move', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ content: this.noteContent })
+                    body: JSON.stringify({ oldPath, newPath })
                 });
-                if (!response.ok) throw new Error('Server returned error');
-                await fetch(`/api/notes/${oldPath}`, { method: 'DELETE' });
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.detail || 'Server returned error');
+                }
+                // The moved file has the last saved copy. Write the editor
+                // buffer too, so a rename before autosave does not drop keystrokes.
+                const saveResponse = await fetch(`/api/notes/${encodeVaultPath(newPath)}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content: this.noteContent, base_hash: this.noteBaseHash })
+                });
+                if (saveResponse.status === 409) {
+                    // Changed elsewhere before the rename: the regular save asks what to do.
+                    this.saveNote();
+                } else if (!saveResponse.ok) {
+                    throw new Error('Server returned error');
+                } else if (newPath === this.currentNote) {
+                    // Our own write: it is the base for the next save.
+                    const saved = await saveResponse.json();
+                    this.noteBaseHash = saved.hash || null;
+                }
+                await this.loadSharedNotePaths();
             } catch (error) {
                 ErrorHandler.handle('rename note', error);
                 await this.loadNotes({ silent: true });
+                await this.loadSharedNotePaths();
             }
         },
         
@@ -6142,7 +6565,7 @@ function noteApp() {
             }
             
             try {
-                const response = await fetch(`/api/notes/${notePath}`, { method: 'DELETE' });
+                const response = await fetch(`/api/notes/${encodeVaultPath(notePath)}`, { method: 'DELETE' });
                 if (!response.ok) throw new Error('Server returned error');
                 this.loadTagsDebounced();
             } catch (error) {
@@ -6800,19 +7223,13 @@ function noteApp() {
             // interpolate the editor<->preview mapping accurately across images
             // and other tall blocks. Runs after all other DOM rewrites so the
             // final element identity is what gets tagged.
-            //
-            // Reading the reactive setting here is deliberate: it makes this getter
-            // depend on it, so toggling the preference re-renders and (un)stamps the
-            // anchors without any explicit refresh.
-            if (this.smartScrollSync) {
-                try {
-                    const landmarks = this._scanSourceLandmarks(this.noteContent);
-                    this._annotateSourceAnchors(tempDiv, landmarks);
-                } catch (e) {
-                    // Any anchor-building failure must not break rendering. Anchors
-                    // are an enhancement, not required for content display.
-                    console.warn('scroll-anchor annotation failed:', e);
-                }
+            try {
+                const landmarks = this._scanSourceLandmarks(this.noteContent);
+                this._annotateSourceAnchors(tempDiv, landmarks);
+            } catch (e) {
+                // Any anchor-building failure must not break rendering. Anchors
+                // are an enhancement, not required for content display.
+                console.warn('scroll-anchor annotation failed:', e);
             }
 
             html = tempDiv.innerHTML;
@@ -7598,65 +8015,46 @@ function noteApp() {
                     return;
                 }
 
-                if (this.smartScrollSync) {
-                    // Coalesce bursts into one sync per frame: _getScrollAnchors()
-                    // reads a rect per landmark, so running it per scroll event is
-                    // O(landmarks) layout work at event rate. The frame callback
-                    // re-reads scrollTop, so it always acts on the latest position.
-                    if (this._editorSyncFrame) return;
-                    this._editorSyncFrame = requestAnimationFrame(() => {
-                        this._editorSyncFrame = null;
+                // Coalesce bursts into one sync per frame: _getScrollAnchors()
+                // reads a rect per landmark, so running it per scroll event is
+                // O(landmarks) layout work at event rate. The frame callback
+                // re-reads scrollTop, so it always acts on the latest position.
+                if (this._editorSyncFrame) return;
+                this._editorSyncFrame = requestAnimationFrame(() => {
+                    this._editorSyncFrame = null;
 
-                        // Landmark-anchored sync using EDITOR PERCENTAGE (not line
-                        // index — see _buildAnchorRange for the wrap-safety reason).
-                        // Preview lands at the pixel position interpolated between
-                        // the bracketing landmark pair. Degenerates to legacy
-                        // percentage sync when there are no landmarks.
-                        const editorScrollable = editor.scrollHeight - editor.clientHeight;
-                        if (editorScrollable <= 0) return;
+                    // Landmark-anchored sync using EDITOR PERCENTAGE (not line
+                    // index — see _buildAnchorRange for the wrap-safety reason).
+                    // Preview lands at the pixel position interpolated between
+                    // the bracketing landmark pair. Falls back to percentage
+                    // within a span when a note has no landmarks.
+                    const editorScrollable = editor.scrollHeight - editor.clientHeight;
+                    if (editorScrollable <= 0) return;
 
-                        const editorPct = editor.scrollTop / editorScrollable;
-                        const totalLines = (this.noteContent || '').split('\n').length;
-                        const anchors = this._getScrollAnchors();
+                    const editorPct = editor.scrollTop / editorScrollable;
+                    const totalLines = (this.noteContent || '').split('\n').length;
+                    const anchors = this._getScrollAnchors();
 
-                        // Store as percentage so cross-view-mode restore works even
-                        // when the editor is hidden (display:none, scrollHeight=0).
-                        if (this.currentNote) {
-                            this.noteScrollPositions[this.currentNote] = { editorPct };
-                        }
-
-                        if (preview.scrollHeight - preview.clientHeight > 0) {
-                            const target = this._editorPctToPreviewScrollTop(
-                                editorPct, anchors, editor, preview, totalLines
-                            );
-                            // Only arm the reentrancy guard when the write will actually
-                            // move the pane. Assigning an unchanged scrollTop fires no
-                            // scroll event, which would leave the guard set and make it
-                            // swallow the user's next real scroll.
-                            if (Math.abs(preview.scrollTop - target) >= 1) {
-                                this.isScrolling = true;
-                                preview.scrollTop = target;
-                            }
-                        }
-                    });
-                } else {
-                    // Percentage sync: the default, and what runs when the
-                    // smart-scroll-sync preference is off.
-                    const scrollableHeight = editor.scrollHeight - editor.clientHeight;
-                    if (scrollableHeight <= 0) return;
-
-                    const scrollPercentage = editor.scrollTop / scrollableHeight;
-                    const previewScrollableHeight = preview.scrollHeight - preview.clientHeight;
-
+                    // Store as percentage so cross-view-mode restore works even
+                    // when the editor is hidden (display:none, scrollHeight=0).
                     if (this.currentNote) {
-                        this.noteScrollPositions[this.currentNote] = scrollPercentage;
+                        this.noteScrollPositions[this.currentNote] = { editorPct };
                     }
 
-                    if (previewScrollableHeight > 0) {
-                        this.isScrolling = true;
-                        preview.scrollTop = scrollPercentage * previewScrollableHeight;
+                    if (preview.scrollHeight - preview.clientHeight > 0) {
+                        const target = this._editorPctToPreviewScrollTop(
+                            editorPct, anchors, editor, preview, totalLines
+                        );
+                        // Only arm the reentrancy guard when the write will actually
+                        // move the pane. Assigning an unchanged scrollTop fires no
+                        // scroll event, which would leave the guard set and make it
+                        // swallow the user's next real scroll.
+                        if (Math.abs(preview.scrollTop - target) >= 1) {
+                            this.isScrolling = true;
+                            preview.scrollTop = target;
+                        }
                     }
-                }
+                });
             };
             
             this._previewScrollHandler = () => {
@@ -7665,53 +8063,36 @@ function noteApp() {
                     return;
                 }
 
-                if (this.smartScrollSync) {
-                    // Frame-coalesced for the same reason as the editor handler above.
-                    if (this._previewSyncFrame) return;
-                    this._previewSyncFrame = requestAnimationFrame(() => {
-                        this._previewSyncFrame = null;
+                // Frame-coalesced for the same reason as the editor handler above.
+                if (this._previewSyncFrame) return;
+                this._previewSyncFrame = requestAnimationFrame(() => {
+                    this._previewSyncFrame = null;
 
-                        const previewScrollable = preview.scrollHeight - preview.clientHeight;
-                        if (previewScrollable <= 0) return;
+                    const previewScrollable = preview.scrollHeight - preview.clientHeight;
+                    if (previewScrollable <= 0) return;
 
-                        const anchors = this._getScrollAnchors();
-                        const totalLines = (this.noteContent || '').split('\n').length;
-                        const editorPct = this._previewScrollTopToEditorPct(
-                            preview.scrollTop, anchors, editor, preview, totalLines
-                        );
+                    const anchors = this._getScrollAnchors();
+                    const totalLines = (this.noteContent || '').split('\n').length;
+                    const editorPct = this._previewScrollTopToEditorPct(
+                        preview.scrollTop, anchors, editor, preview, totalLines
+                    );
 
-                        // Capture preview-driven scrolls too — this is the only path
-                        // that fires in preview-only mode, where the textarea is
-                        // display:none and never scrolls.
-                        if (this.currentNote) {
-                            this.noteScrollPositions[this.currentNote] = { editorPct };
-                        }
-
-                        const editorScrollable = editor.scrollHeight - editor.clientHeight;
-                        if (editorScrollable > 0) {
-                            const target = editorPct * editorScrollable;
-                            if (Math.abs(editor.scrollTop - target) >= 1) {
-                                this.isScrolling = true;
-                                editor.scrollTop = target;
-                            }
-                        }
-                    });
-                } else {
-                    const scrollableHeight = preview.scrollHeight - preview.clientHeight;
-                    if (scrollableHeight <= 0) return;
-
-                    const scrollPercentage = preview.scrollTop / scrollableHeight;
-                    const editorScrollableHeight = editor.scrollHeight - editor.clientHeight;
-
+                    // Capture preview-driven scrolls too — this is the only path
+                    // that fires in preview-only mode, where the textarea is
+                    // display:none and never scrolls.
                     if (this.currentNote) {
-                        this.noteScrollPositions[this.currentNote] = scrollPercentage;
+                        this.noteScrollPositions[this.currentNote] = { editorPct };
                     }
 
-                    if (editorScrollableHeight > 0) {
-                        this.isScrolling = true;
-                        editor.scrollTop = scrollPercentage * editorScrollableHeight;
+                    const editorScrollable = editor.scrollHeight - editor.clientHeight;
+                    if (editorScrollable > 0) {
+                        const target = editorPct * editorScrollable;
+                        if (Math.abs(editor.scrollTop - target) >= 1) {
+                            this.isScrolling = true;
+                            editor.scrollTop = target;
+                        }
                     }
-                }
+                });
             };
             
             // Attach new listeners
@@ -8215,9 +8596,8 @@ function noteApp() {
          * Restore the saved scroll position for the current note in both panes. Also
          * called from the viewMode watcher because browsers reset scrollTop when an
          * overflow:auto element goes from display:none back to visible. Accepts either
-         * a legacy number (percentage) or { editorPct } from the anchor path, so the
-         * smart-scroll-sync preference is safe to flip mid-session. Idempotent;
-         * isScrolling keeps the sync handlers from echoing these programmatic writes.
+         * a bare percentage or { editorPct }. Idempotent; isScrolling keeps the sync
+         * handlers from echoing these programmatic writes.
          */
         _restoreNoteScroll() {
             if (!this.currentNote || this.currentMedia) return;
@@ -8246,17 +8626,12 @@ function noteApp() {
             if (preview) {
                 const scrollable = preview.scrollHeight - preview.clientHeight;
                 if (scrollable > 0) {
-                    if (this.smartScrollSync) {
-                        const anchors = this._getScrollAnchors();
-                        const totalLines = (this.noteContent || '').split('\n').length;
-                        this.isScrolling = true;
-                        preview.scrollTop = this._editorPctToPreviewScrollTop(
-                            pct, anchors, editor, preview, totalLines
-                        );
-                    } else {
-                        this.isScrolling = true;
-                        preview.scrollTop = pct * scrollable;
-                    }
+                    const anchors = this._getScrollAnchors();
+                    const totalLines = (this.noteContent || '').split('\n').length;
+                    this.isScrolling = true;
+                    preview.scrollTop = this._editorPctToPreviewScrollTop(
+                        pct, anchors, editor, preview, totalLines
+                    );
                 }
             }
         },
@@ -9161,13 +9536,21 @@ function noteApp() {
                 return;
             }
             
+            const requestId = (this._graphRequestId || 0) + 1;
+            this._graphRequestId = requestId;
             this.graphLoaded = false;
             
             try {
-                // Fetch graph data from API
-                const response = await fetch('/api/graph');
+                // Full map by default. The sidebar toggle asks the server to
+                // leave out notes stored under any folder whose name starts with "_".
+                const graphUrl = this.hideUnderscoreFolders
+                    ? '/api/graph?include_system_folders=false'
+                    : '/api/graph';
+                const response = await fetch(graphUrl);
+                if (requestId !== this._graphRequestId) return;
                 if (!response.ok) throw new Error('Failed to fetch graph data');
                 const data = await response.json();
+                if (requestId !== this._graphRequestId) return;
                 this.graphData = data;
                 
                 // Get container
@@ -9400,6 +9783,7 @@ function noteApp() {
                 this.addGraphLegend(container, accentPrimary, borderColor, textSecondary);
                 
             } catch (error) {
+                if (requestId !== this._graphRequestId) return;
                 console.error('Failed to initialize graph:', error);
                 this.graphLoaded = true; // Stop loading indicator
             }
